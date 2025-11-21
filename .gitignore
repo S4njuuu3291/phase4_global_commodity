@@ -1,0 +1,6 @@
+keys/*
+tf-build/.terraform/
+tf-build/terraform.tfstate
+tf-build/terraform.tfstate.backup
+tf-build/.terraform.tfstate.lock.info
+tf-build/.terraform.lock.hcl
