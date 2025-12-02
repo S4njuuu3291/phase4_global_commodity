@@ -1,11 +1,6 @@
 import datetime
-import json
 import logging
-import re
-import time
-from cmath import e
 
-import pandas as pd
 import requests
 from google.cloud import secretmanager
 from pytrends.request import TrendReq
@@ -30,9 +25,7 @@ def fetch_metal_prices(API_KEY):
             "gold",
             "silver",
             "platinum",
-            "palladium",
             "copper",
-            "aluminum",
             "nickel",
         ]
         filtered_metals = {
@@ -143,12 +136,3 @@ def fetch_news_count(API_KEY, keywords):
             logging.error(f"Error fetching data from API: {e}")
             return None
     return news_counts
-
-
-API_KEY_NEWS = get_secret("news_api_key", "project-global-commodityy")
-print(
-    fetch_news_count(
-        API_KEY_NEWS,
-        ["gold", "silver", "platinum", "palladium", "copper", "aluminum", "nickel"],
-    )
-)
