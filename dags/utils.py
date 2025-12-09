@@ -1,5 +1,6 @@
 import datetime
 import logging
+import time
 
 import requests
 from google.cloud import secretmanager
@@ -64,9 +65,14 @@ def fetch_fred_data(API_KEY):
     macro_datas = {}
     series_ids = ["DGS10", "DTWEXBGS", "CPIAUCSL"]
 
+    now = datetime.datetime.now().date()
+
     for series_id in series_ids:
-        now = datetime.datetime.now()
-        week_ago = now - datetime.timedelta(days=7)
+        if series_id == "CPIAUCSL":
+            # must be in YYYY-MM-DD format
+            week_ago = now - datetime.timedelta(days=180)
+        else:
+            week_ago = now - datetime.timedelta(days=7)
 
         try:
             logging.info(f"Fetching FRED data for series ID: {series_id}")
@@ -82,40 +88,81 @@ def fetch_fred_data(API_KEY):
         return macro_datas
 
 
-def fetch_google_trends(keywords):
-    try:
-        logging.info(f"Fetching Google Trends data for timeframe: today 3-m.")
+import datetime
+import json
+import logging
+import random
+import time
 
-        TIME_RANGE = "today 3-m"
+from pytrends.request import TrendReq
+
+
+def fetch_google_trends(keywords):
+    if not keywords:
+        logging.warning("Keyword list cannot be empty.")
+        return None
+
+    all_trends_data = []
+
+    try:
+        # logging.info(
+        #     f"Fetching Google Trends data individually for long-term (5-year) and short-term (7-day) averages."
+        # )
 
         pytrends_inst = TrendReq()
-        pytrends_inst.build_payload(keywords, timeframe=TIME_RANGE)
-        trends_data = pytrends_inst.interest_over_time()
+        yesterday_str = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime(
+            "%Y-%m-%d"
+        )
 
-        if not trends_data.empty:
-            if "isPartial" in trends_data.columns:
-                trends_data = trends_data.drop(columns=["isPartial"])
+        for keyword in keywords:
+            # TIME_RANGE_5Y = "today 5-y"
+            # pytrends_inst.build_payload([keyword], timeframe=TIME_RANGE_5Y)
+            # trends_data_5y = pytrends_inst.interest_over_time()
 
-            trends_summary_series = trends_data.mean(numeric_only=True)
+            TIME_RANGE_7D = "now 7-d"
+            pytrends_inst.build_payload([keyword], timeframe=TIME_RANGE_7D)
+            trends_data_7d = pytrends_inst.interest_over_time()
 
-            trends_summary_df = trends_summary_series.reset_index()
+            # avg_5y = None
+            # if not trends_data_5y.empty and keyword in trends_data_5y.columns:
+            #     if "isPartial" in trends_data_5y.columns:
+            #         trends_data_5y = trends_data_5y.drop(columns=["isPartial"])
+            #     avg_5y = float(trends_data_5y[keyword].mean(numeric_only=True))
+            #     logging.info(f"5Y Avg score for '{keyword}': {avg_5y:.2f}")
+            # else:
+            #     logging.warning(f"No 5Y data found for keyword: '{keyword}'.")
 
-            trends_summary_df.columns = ["indicator_name", "indicator_value"]
+            avg_7d = None
+            if not trends_data_7d.empty and keyword in trends_data_7d.columns:
+                if "isPartial" in trends_data_7d.columns:
+                    trends_data_7d = trends_data_7d.drop(columns=["isPartial"])
+                avg_7d = float(trends_data_7d[keyword].mean(numeric_only=True))
+                logging.info(f"7D Avg score for '{keyword}': {avg_7d:.2f}")
+            else:
+                logging.warning(f"No 7D data found for keyword: '{keyword}'.")
 
-            yesterday_str = (
-                datetime.datetime.now() - datetime.timedelta(days=1)
-            ).strftime("%Y-%m-%d")
-            trends_summary_df["date"] = yesterday_str
-            processed_data = trends_summary_df[
-                ["date", "indicator_name", "indicator_value"]
-            ]
+            data_point = {
+                "date": yesterday_str,
+                "indicator_name": keyword,
+                # "indicator_value_5y_avg": avg_5y,
+                "indicator_value_7d_avg": avg_7d,
+            }
+
+            all_trends_data.append(data_point)
+
+            sleep_time = random.randint(8, 15)
+            logging.info(f"Pausing for {sleep_time} seconds...")
+            time.sleep(sleep_time)
+
+        if all_trends_data:
             logging.info(
-                f"Successfully aggregated {len(processed_data)} daily trends scores."
+                f"Successfully aggregated {len(all_trends_data)} trends scores."
             )
-            return processed_data.to_dict(orient="records")
+            return json.dumps(all_trends_data)
         else:
-            logging.warning("No Google Trends data found for the given keywords.")
+            logging.warning("No Google Trends data found for any of the keywords.")
             return None
+
     except Exception as e:
         logging.error(f"Error fetching Google Trends data: {e}")
         return None
@@ -136,3 +183,29 @@ def fetch_news_count(API_KEY, keywords):
             logging.error(f"Error fetching data from API: {e}")
             return None
     return news_counts
+
+
+def to_ndjson(record: dict) -> str:
+    return json.dumps(record) + "\n"
+
+
+import re
+
+
+def sanitize_keys(obj):
+    if isinstance(obj, dict):
+        new_obj = {}
+        for k, v in obj.items():
+            # Replace invalid characters with underscore
+            new_key = re.sub(r"[^a-zA-Z0-9_]", "_", k)
+
+            # If starts with digit, prefix with underscore
+            if re.match(r"^[0-9]", new_key):
+                new_key = f"_{new_key}"
+
+            new_obj[new_key] = sanitize_keys(v)
+        return new_obj
+    elif isinstance(obj, list):
+        return [sanitize_keys(i) for i in obj]
+    else:
+        return obj

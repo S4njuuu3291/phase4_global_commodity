@@ -12,7 +12,8 @@ dependencies = [
     "pandas (>=2.3.3,<3.0.0)",
     "pytrends (>=4.9.2,<5.0.0)",
     "google-cloud-secret-manager (>=2.25.0,<3.0.0)",
-    "apache-airflow-providers-google (>=19.0.0,<20.0.0)"
+    "apache-airflow-providers-google (>=19.0.0,<20.0.0)",
+    "dbt-bigquery (>=1.10.3,<2.0.0)"
 ]
 
 

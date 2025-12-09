@@ -1,17 +1,15 @@
 # Nama profile ini harus sama dengan 'profile' yang didefinisikan di dbt_project.yml
 global_commodity_dbt:
-  target: dev
-  outputs:
-    dev:
-      type: bigquery
-      method: service-account-json
-      
-      keyfile: /usr/local/airflow/keys/sa_key.json 
-      
-      project: "{{ env_var('GCP_PROJECT_ID') }}"
-      dataset: "{{ env_var('DWH_DATASET_ID') }}" 
+    target: dev
+    outputs:
+        dev:
+            type: bigquery
+            # the method is ADC
+            method: oauth
+            project: "{{ env_var('GCP_PROJECT_ID') }}"
+            dataset: "{{ env_var('DWH_DATASET_ID') }}"
 
-      threads: 4
-      timeout_seconds: 300
-      location: asia-southeast2
-      schema: dwh_commodity     
+            threads: 4
+            timeout_seconds: 300
+            location: asia-southeast2
+            schema: dwh_commodity

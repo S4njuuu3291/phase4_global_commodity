@@ -1,5 +1,7 @@
 {
     "venvPath": "/home/sanju3291/.cache/pypoetry/virtualenvs",
     "venv": "global-commodity-65Ma3uZ7-py3.12",
-    "pythonPlatform": "Linux"
+    "pythonPlatform": "Linux",
+    "typeCheckingMode": "off",
+    "reportMissingTypeStubs": "none"
 }
