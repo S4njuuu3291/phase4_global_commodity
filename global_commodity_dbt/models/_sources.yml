@@ -1,0 +1,8 @@
+version: 2
+
+sources:
+    - name: commodity
+      database: project-global-commodityy
+      schema: dwh_commodity
+      tables:
+          - name: commodity_data

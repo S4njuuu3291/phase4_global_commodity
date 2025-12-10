@@ -6,10 +6,9 @@ global_commodity_dbt:
             type: bigquery
             # the method is ADC
             method: oauth
-            project: "{{ env_var('GCP_PROJECT_ID') }}"
-            dataset: "{{ env_var('DWH_DATASET_ID') }}"
-
+            project: "project-global-commodityy"
+            # keyfile: "{{ env_var('GOOGLE_APPLICATION_CREDENTIALS') }}"
             threads: 4
             timeout_seconds: 300
             location: asia-southeast2
-            schema: dwh_commodity
+            dataset: dwh_commodity
