@@ -30,7 +30,7 @@ Analytics-Ready Tables
 
 📷 **Architecture Diagram**
 
-![global-commodity-architecture](project_4-global-commodity\img\architecture-diagram.png)
+![global-commodity-architecture](img\architecture-diagram.png)
 
 ---
 
@@ -135,7 +135,7 @@ dbt_test
 * Raw data persisted before transformation (replayable)
 
 📷 **Airflow DAG Graph View**
-![global_commodity-graph](project_4-global-commodity\img\global_commodity-graph.png)
+![global_commodity-graph](img\global_commodity-graph.png)
 
 ---
 
@@ -166,7 +166,7 @@ The warehouse follows a **layered modeling approach** to ensure clarity, scalabi
 | Mart      | Analytics-ready denormalized dataset                   |
 
 📷 **dbt Lineage Graph**
-![dbt_dag](project_4-global-commodity\img\dbt-dag.png)
+![dbt_dag](img\dbt-dag.png)
 
 ---
 
@@ -256,7 +256,7 @@ Contains:
 * CPI, USD Index, and Treasury Yield signals
 
 📷 **Sample Query Result**
-![dbt_dag](project_4-global-commodity\img\ss_query_mart.png)
+![dbt_dag](img\ss_query_mart.png)
 
 ---
 
