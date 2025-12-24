@@ -3,6 +3,7 @@ import logging
 
 import pendulum
 from airflow.decorators import dag, task
+from airflow.operators.bash import BashOperator
 from airflow.providers.google.cloud.hooks.gcs import GCSHook
 
 # import gcs to bigquery operator
@@ -22,6 +23,8 @@ from utils import (
 
 project_id = "project-global-commodityy"
 bucket_name = "data-lake-bronze-project-global-commodityy"
+DBT_PROJECT_DIR = "/opt/airflow/global_commodity_dbt"
+DBT_COMMAND_PREFIX = f"cd {DBT_PROJECT_DIR} && poetry run dbt"
 
 
 @dag(
@@ -93,6 +96,7 @@ def global_commodity_dag():
             data = to_ndjson(data)
         except Exception as e:
             logging.error(f"======= Error fetching commodity data: {e} ======")
+            raise
 
         # Load to GCS
         try:
@@ -112,26 +116,39 @@ def global_commodity_dag():
         # RETURN path for xcom
         return destination_blob_name
 
-    # get_all_keys_task = get_all_keys()
-    # evl_task = extract_val_load_gcs(get_all_keys_task)
+    get_all_keys_task = get_all_keys()
+    evl_task = extract_val_load_gcs(get_all_keys_task)
 
-    # gcs_object_path = evl_task
-    gcs_object_path = "global_commodity/date=2025-12-09/commodity_data.json"
+    gcs_object_path = evl_task
+    # gcs_object_path = "global_commodity/date=2025-12-09/commodity_data.json"
+
     gcs_to_bq = GCSToBigQueryOperator(
         task_id="gcs_to_bq",
         bucket=bucket_name,
         source_objects=[gcs_object_path],
         destination_project_dataset_table="project-global-commodityy.dwh_commodity.commodity_data",
         source_format="NEWLINE_DELIMITED_JSON",
-        write_disposition="WRITE_TRUNCATE",
+        write_disposition="WRITE_APPEND",
         autodetect=True,
         gcp_conn_id="google_cloud_default",
         ignore_unknown_values=True,
         project_id="project-global-commodityy",
+        schema_update_options=["ALLOW_FIELD_ADDITION"],
     )
 
-    # evl_task >> gcs_to_bq
-    gcs_to_bq
+    # dbt transformation task
+    dbt_run_task = BashOperator(
+        task_id="dbt_run",
+        bash_command=f"{DBT_COMMAND_PREFIX} run --full-refresh",
+    )
+
+    # dbt test
+    dbt_test_task = BashOperator(
+        task_id="dbt_test",
+        bash_command=f"{DBT_COMMAND_PREFIX} test",
+    )
+    # gcs_to_bq
+    gcs_to_bq >> dbt_run_task >> dbt_test_task
 
 
 commodity_dag = global_commodity_dag()

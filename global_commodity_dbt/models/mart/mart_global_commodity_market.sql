@@ -4,51 +4,133 @@
     cluster_by=['commodity_id']
 ) }}
 
-WITH p AS (
-    SELECT *
-    FROM {{ ref('fact_commodity_prices') }}
+WITH
+-- 1. Definisikan Tabel Sumber
+p AS (
+    SELECT * FROM {{ ref('fact_commodity_prices') }}
 ),
 n AS (
-    SELECT *
-    FROM {{ ref('fact_commodity_news') }}
+    SELECT * FROM {{ ref('fact_commodity_news') }}
 ),
--- ✅ PERBAIKAN 1: Filter hanya untuk kurs USD ke IDR
-fx_idr AS (
-    SELECT
-        date,
-        rate
-    FROM {{ ref('fact_currency_exchange_rates') }}
-    -- Ganti 'USD' dan 'IDR' dengan nama kolom yang sesuai di tabel Anda jika berbeda.
-    -- Misalnya, jika ada kolom 'currency_pair', filternya mungkin WHERE currency_pair = 'USD/IDR'
-    WHERE base_currency = 'USD' AND target_currency = 'IDR'
+fx AS (
+    SELECT * FROM {{ ref('fact_currency_exchange_rates') }}
 ),
 m AS (
-    SELECT *
+    SELECT
+        date,
+        series_id,
+        CAST(value AS NUMERIC) AS macro_value -- Pastikan nilai sudah CAST
     FROM {{ ref('fact_macro_observations') }}
 ),
 
-macro_pivot AS (
+-- ✅ KOREKSI 1: Membersihkan dan Memilih Satu Nilai Kurs (Mengatasi Duplikasi)
+fx_cleaned AS (
     SELECT
         date,
-        MAX(CASE WHEN series_id = 'CPIAUCSL' THEN value END) AS cpi,
-        MAX(CASE WHEN series_id = 'DTWEXBGS' THEN value END) AS usd_index,
-        MAX(CASE WHEN series_id = 'DGS10' THEN value END) AS treasury_yield
-    FROM m
+        rate,
+        target_currency,
+        -- Beri peringkat. Ambil 1 nilai kurs per tanggal, per target mata uang.
+        ROW_NUMBER() OVER(
+            PARTITION BY date, base_currency, target_currency
+            ORDER BY rate DESC -- Jika ada duplikasi, pilih nilai tertinggi
+        ) AS rn
+    FROM fx
+    -- Asumsi base_currency selalu 'USD'
+    WHERE base_currency = 'USD' AND target_currency IN ('IDR', 'JPY', 'CNY', 'EUR')
+),
+
+-- ✅ KOREKSI 2: Melakukan PIVOT Kurs Mata Uang (Menggabungkan beberapa kurs per tanggal)
+currency_pivot AS (
+    SELECT
+        date,
+        MAX(CASE WHEN target_currency = 'IDR' THEN rate END) AS rate_to_idr,
+        MAX(CASE WHEN target_currency = 'JPY' THEN rate END) AS rate_to_jpy,
+        MAX(CASE WHEN target_currency = 'CNY' THEN rate END) AS rate_to_cny,
+        MAX(CASE WHEN target_currency = 'EUR' THEN rate END) AS rate_to_eur
+    FROM fx_cleaned
+    WHERE rn = 1 -- Hanya gunakan data yang sudah dibersihkan (tanpa duplikasi)
     GROUP BY date
+),
+
+-- CTE Makro: CPI
+macro_cpi AS (
+    SELECT
+        m.date AS macro_date,
+        m.macro_value,
+        p.date AS commodity_date,
+        ROW_NUMBER() OVER(
+            PARTITION BY p.date
+            ORDER BY m.date DESC
+        ) AS rn
+    FROM p
+    CROSS JOIN m
+    WHERE m.series_id = 'CPIAUCSL'
+    AND m.date <= p.date
+),
+
+-- CTE Makro: USD Index
+macro_usd_index AS (
+    SELECT
+        m.date AS macro_date,
+        m.macro_value,
+        p.date AS commodity_date,
+        ROW_NUMBER() OVER(
+            PARTITION BY p.date
+            ORDER BY m.date DESC
+        ) AS rn
+    FROM p
+    CROSS JOIN m
+    WHERE m.series_id = 'DTWEXBGS'
+    AND m.date <= p.date
+),
+
+-- CTE Makro: Treasury Yield
+macro_treasury_yield AS (
+    SELECT
+        m.date AS macro_date,
+        m.macro_value,
+        p.date AS commodity_date,
+        ROW_NUMBER() OVER(
+            PARTITION BY p.date
+            ORDER BY m.date DESC
+        ) AS rn
+    FROM p
+    CROSS JOIN m
+    WHERE m.series_id = 'DGS10'
+    AND m.date <= p.date
 )
 
+-- 3. Final SELECT (Gabungkan semua CTE ke dalam data Komoditas)
 SELECT
     p.date,
     p.commodity_id,
     p.price,
     n.news_count,
-    -- ✅ PERBAIKAN 2: Menggunakan alias yang sudah difilter
-    fx.rate AS usd_to_idr,
-    macro.cpi,
-    macro.usd_index,
-    macro.treasury_yield
+
+    -- ✅ KOREKSI 3: Perhitungan Harga dalam Mata Uang Lokal
+    (p.price * cp.rate_to_idr) AS idr_price,
+    (p.price * cp.rate_to_jpy) AS jpy_price,
+    (p.price * cp.rate_to_cny) AS cny_price,
+    (p.price * cp.rate_to_eur) AS eur_price,
+
+    -- CPI
+    cpi.macro_value AS cpi_value,
+    cpi.macro_date AS cpi_date,
+
+    -- USD Index
+    usd.macro_value AS usd_index_value,
+    usd.macro_date AS usd_index_date,
+
+    -- Treasury Yield
+    ty.macro_value AS treasury_yield_value,
+    ty.macro_date AS treasury_yield_date
+
 FROM p
 LEFT JOIN n USING (date, commodity_id)
--- ✅ PERBAIKAN 3: Menggabungkan dengan alias 'fx_idr' yang sudah difilter
-LEFT JOIN fx_idr AS fx ON fx.date = p.date
-LEFT JOIN macro_pivot AS macro ON macro.date = p.date
+-- ✅ KOREKSI 4: JOIN ke CTE Pivot Kurs yang sudah dibersihkan
+LEFT JOIN currency_pivot AS cp ON cp.date = p.date
+
+-- Gabungkan CTE Makro (LOCF)
+LEFT JOIN macro_cpi AS cpi ON cpi.commodity_date = p.date AND cpi.rn = 1
+LEFT JOIN macro_usd_index AS usd ON usd.commodity_date = p.date AND usd.rn = 1
+LEFT JOIN macro_treasury_yield AS ty ON ty.commodity_date = p.date AND ty.rn = 1
