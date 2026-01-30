@@ -4,7 +4,7 @@ Tests BashOperator untuk dbt run command
 """
 import pytest
 from unittest.mock import MagicMock, patch, call
-from airflow.operators.bash import BashOperator
+from airflow.providers.standard.operators.bash import BashOperator
 from airflow.exceptions import AirflowException
 
 
@@ -12,7 +12,7 @@ DBT_PROJECT_DIR = "/opt/airflow/global_commodity_dbt"
 DBT_COMMAND_PREFIX = f"cd {DBT_PROJECT_DIR} && poetry run dbt"
 
 
-@patch("airflow.operators.bash.BashOperator.execute")
+@patch("airflow.providers.standard.operators.bash.BashOperator.execute")
 def test_dbt_run_success(mock_execute, airflow_context):
     """Test successful dbt run execution"""
     # Setup
@@ -32,7 +32,7 @@ def test_dbt_run_success(mock_execute, airflow_context):
     mock_execute.assert_called_once()
 
 
-@patch("airflow.operators.bash.BashOperator.execute")
+@patch("airflow.providers.standard.operators.bash.BashOperator.execute")
 def test_dbt_run_compile_error(mock_execute, airflow_context):
     """Test dbt run with compilation error"""
     # Setup
@@ -53,7 +53,7 @@ def test_dbt_run_compile_error(mock_execute, airflow_context):
     assert "compilation error" in str(exc_info.value).lower()
 
 
-@patch("airflow.operators.bash.BashOperator.execute")
+@patch("airflow.providers.standard.operators.bash.BashOperator.execute")
 def test_dbt_run_parse_error(mock_execute, airflow_context):
     """Test dbt run with YAML parse error"""
     # Setup
@@ -74,7 +74,7 @@ def test_dbt_run_parse_error(mock_execute, airflow_context):
     assert "parsing error" in str(exc_info.value).lower()
 
 
-@patch("airflow.operators.bash.BashOperator.execute")
+@patch("airflow.providers.standard.operators.bash.BashOperator.execute")
 def test_dbt_run_database_connection_error(mock_execute, airflow_context):
     """Test dbt run with database connection error"""
     # Setup
@@ -95,7 +95,7 @@ def test_dbt_run_database_connection_error(mock_execute, airflow_context):
     assert "connection" in str(exc_info.value).lower()
 
 
-@patch("airflow.operators.bash.BashOperator.execute")
+@patch("airflow.providers.standard.operators.bash.BashOperator.execute")
 def test_dbt_run_partial_model_failure(mock_execute, airflow_context):
     """Test dbt run with partial model failure"""
     # Setup
@@ -116,7 +116,7 @@ def test_dbt_run_partial_model_failure(mock_execute, airflow_context):
     assert "failed" in str(exc_info.value).lower()
 
 
-@patch("airflow.operators.bash.BashOperator.execute")
+@patch("airflow.providers.standard.operators.bash.BashOperator.execute")
 def test_dbt_run_timeout(mock_execute, airflow_context):
     """Test dbt run with timeout"""
     # Setup
@@ -139,7 +139,7 @@ def test_dbt_run_timeout(mock_execute, airflow_context):
     assert "timeout" in str(exc_info.value).lower()
 
 
-@patch("airflow.operators.bash.BashOperator")
+@patch("airflow.providers.standard.operators.bash.BashOperator")
 def test_dbt_run_operator_configuration(mock_operator_cls):
     """Test BashOperator is properly configured for dbt run"""
     # Setup
@@ -160,7 +160,7 @@ def test_dbt_run_operator_configuration(mock_operator_cls):
     assert "poetry run dbt run" in operator.bash_command
 
 
-@patch("airflow.operators.bash.BashOperator.execute")
+@patch("airflow.providers.standard.operators.bash.BashOperator.execute")
 def test_dbt_run_command_contains_full_refresh(mock_execute, airflow_context):
     """Test dbt run command includes --full-refresh flag"""
     # Setup
@@ -179,7 +179,7 @@ def test_dbt_run_command_contains_full_refresh(mock_execute, airflow_context):
     assert "--full-refresh" in operator.bash_command
 
 
-@patch("airflow.operators.bash.BashOperator.execute")
+@patch("airflow.providers.standard.operators.bash.BashOperator.execute")
 def test_dbt_run_output_captured(mock_execute, airflow_context):
     """Test dbt run output is captured for logging"""
     # Setup

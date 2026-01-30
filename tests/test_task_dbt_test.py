@@ -4,7 +4,7 @@ Tests BashOperator untuk dbt test command
 """
 import pytest
 from unittest.mock import MagicMock, patch
-from airflow.operators.bash import BashOperator
+from airflow.providers.standard.operators.bash import BashOperator
 from airflow.exceptions import AirflowException
 
 
@@ -12,7 +12,7 @@ DBT_PROJECT_DIR = "/opt/airflow/global_commodity_dbt"
 DBT_COMMAND_PREFIX = f"cd {DBT_PROJECT_DIR} && poetry run dbt"
 
 
-@patch("airflow.operators.bash.BashOperator.execute")
+@patch("airflow.providers.standard.operators.bash.BashOperator.execute")
 def test_dbt_test_all_pass(mock_execute, airflow_context):
     """Test all dbt tests pass successfully"""
     # Setup
@@ -32,7 +32,7 @@ def test_dbt_test_all_pass(mock_execute, airflow_context):
     mock_execute.assert_called_once()
 
 
-@patch("airflow.operators.bash.BashOperator.execute")
+@patch("airflow.providers.standard.operators.bash.BashOperator.execute")
 def test_dbt_test_some_fail(mock_execute, airflow_context):
     """Test dbt tests with some failures"""
     # Setup - Exit code 1 indicates test failures
@@ -54,7 +54,7 @@ def test_dbt_test_some_fail(mock_execute, airflow_context):
     assert "2" in str(exc_info.value)
 
 
-@patch("airflow.operators.bash.BashOperator.execute")
+@patch("airflow.providers.standard.operators.bash.BashOperator.execute")
 def test_dbt_test_not_null_failure(mock_execute, airflow_context):
     """Test dbt not_null test failure"""
     # Setup
@@ -76,7 +76,7 @@ def test_dbt_test_not_null_failure(mock_execute, airflow_context):
     assert "gold_price" in str(exc_info.value)
 
 
-@patch("airflow.operators.bash.BashOperator.execute")
+@patch("airflow.providers.standard.operators.bash.BashOperator.execute")
 def test_dbt_test_unique_constraint_failure(mock_execute, airflow_context):
     """Test dbt unique constraint test failure"""
     # Setup
@@ -97,7 +97,7 @@ def test_dbt_test_unique_constraint_failure(mock_execute, airflow_context):
     assert "duplicate" in str(exc_info.value).lower()
 
 
-@patch("airflow.operators.bash.BashOperator.execute")
+@patch("airflow.providers.standard.operators.bash.BashOperator.execute")
 def test_dbt_test_execution_error(mock_execute, airflow_context):
     """Test dbt test with execution error"""
     # Setup
@@ -118,7 +118,7 @@ def test_dbt_test_execution_error(mock_execute, airflow_context):
     assert "error" in str(exc_info.value).lower()
 
 
-@patch("airflow.operators.bash.BashOperator.execute")
+@patch("airflow.providers.standard.operators.bash.BashOperator.execute")
 def test_dbt_test_no_tests_found(mock_execute, airflow_context):
     """Test dbt test when no tests are found"""
     # Setup
@@ -137,7 +137,7 @@ def test_dbt_test_no_tests_found(mock_execute, airflow_context):
     assert result == 0
 
 
-@patch("airflow.operators.bash.BashOperator.execute")
+@patch("airflow.providers.standard.operators.bash.BashOperator.execute")
 def test_dbt_test_timeout(mock_execute, airflow_context):
     """Test dbt test with timeout"""
     # Setup
@@ -160,7 +160,7 @@ def test_dbt_test_timeout(mock_execute, airflow_context):
     assert "timeout" in str(exc_info.value).lower()
 
 
-@patch("airflow.operators.bash.BashOperator")
+@patch("airflow.providers.standard.operators.bash.BashOperator")
 def test_dbt_test_operator_configuration(mock_operator_cls):
     """Test BashOperator is properly configured for dbt test"""
     # Setup
@@ -181,7 +181,7 @@ def test_dbt_test_operator_configuration(mock_operator_cls):
     assert "poetry run dbt test" in operator.bash_command
 
 
-@patch("airflow.operators.bash.BashOperator.execute")
+@patch("airflow.providers.standard.operators.bash.BashOperator.execute")
 def test_dbt_test_with_selector(mock_execute, airflow_context):
     """Test dbt test with selector for specific models"""
     # Setup
@@ -201,7 +201,7 @@ def test_dbt_test_with_selector(mock_execute, airflow_context):
     assert "--select fact_commodity_prices" in operator.bash_command
 
 
-@patch("airflow.operators.bash.BashOperator.execute")
+@patch("airflow.providers.standard.operators.bash.BashOperator.execute")
 def test_dbt_test_detailed_output(mock_execute, airflow_context):
     """Test dbt test with detailed output for debugging"""
     # Setup
