@@ -442,6 +442,18 @@ pytest -v
 # Output: 115 passed in 12.34s
 ```
 
+**E2E Validation:**
+```bash
+# Automated end-to-end validation script
+python validate_e2e.py
+
+# Validates:
+# - GCS file existence
+# - BigQuery table row counts
+# - dbt model compilation
+# - Data freshness
+```
+
 ### Data Quality Features
 
 **1. Input Validation (Pydantic v2)**
