@@ -17,7 +17,8 @@ fx AS (
 ),
 m AS (
     SELECT
-        date,
+        date_col AS date,
+        date_str,
         series_id,
         CAST(value AS NUMERIC) AS macro_value -- Pastikan nilai sudah CAST
     FROM {{ ref('fact_macro_observations') }}

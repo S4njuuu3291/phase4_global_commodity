@@ -5,29 +5,32 @@ WITH source AS (
     FROM {{ source('commodity', 'commodity_data') }}
 ),
 
--- Flatten masing-masing seri
+-- Flatten masing-masing seri dengan CAST ke FLOAT64, filter invalid values
 cpi AS (
     SELECT
         'CPIAUCSL' AS series_id,
-        obs.date,
-        obs.value
+        CAST(obs.date AS STRING) AS date,
+        SAFE_CAST(obs.value AS FLOAT64) AS value
     FROM source, UNNEST(macro.CPIAUCSL.observations) obs
+    WHERE SAFE_CAST(obs.value AS FLOAT64) IS NOT NULL
 ),
 
 dollar AS (
     SELECT
         'DTWEXBGS' AS series_id,
-        obs.date,
-        obs.value
+        CAST(obs.date AS STRING) AS date,
+        SAFE_CAST(obs.value AS FLOAT64) AS value
     FROM source, UNNEST(macro.DTWEXBGS.observations) obs
+    WHERE SAFE_CAST(obs.value AS FLOAT64) IS NOT NULL
 ),
 
 bond AS (
     SELECT
         'DGS10' AS series_id,
-        obs.date,
-        obs.value
+        CAST(obs.date AS STRING) AS date,
+        SAFE_CAST(obs.value AS FLOAT64) AS value
     FROM source, UNNEST(macro.DGS10.observations) obs
+    WHERE SAFE_CAST(obs.value AS FLOAT64) IS NOT NULL
 ),
 
 -- Gabungkan semua seri

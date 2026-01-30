@@ -22,8 +22,11 @@ x-airflow-common: &airflow-common
         AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
         AIRFLOW_CONFIG: "/opt/airflow/config/airflow.cfg"
         GOOGLE_APPLICATION_CREDENTIALS: "/opt/airflow/keys/key.json"
-        GOOGLE_CLOUD_PROJECT: project-global-commodityy
-        GOOGLE_CLOUD_QUOTA_PROJECT: project-global-commodityy
+        GOOGLE_CLOUD_PROJECT: ${GCP_PROJECT_ID}
+        GOOGLE_CLOUD_QUOTA_PROJECT: ${GCP_PROJECT_ID}
+        BUCKET_NAME: ${BUCKET_NAME}
+        GCP_PROJECT_ID: ${GCP_PROJECT_ID}
+        DWH_DATASET_ID: ${DWH_DATASET_ID}
 
     volumes:
         - ./dags:/opt/airflow/dags
@@ -212,6 +215,13 @@ services:
                 echo "Files in shared volumes:"
                 echo
                 ls -la /opt/airflow/{logs,dags,plugins,config}
+                echo
+                echo "Setting up Airflow connections..."
+                /entrypoint airflow connections add google_cloud_default \
+                    --conn-type google_cloud_platform \
+                    --conn-extra '{"extra__google_cloud_platform__key_path": "/opt/airflow/keys/key.json"}' \
+                    2>/dev/null || echo "Connection already exists"
+                echo "Connections setup complete!"
 
         environment:
             <<: *airflow-common-env

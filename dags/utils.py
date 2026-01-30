@@ -8,11 +8,14 @@ import httpx
 from google.cloud import secretmanager
 from pytrends.request import TrendReq
 import yaml
+import os
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-from dags.models import ProcessedMetalModel,CurrencyRateModel,FredDataModel, NewsCountModel
-from dags.exceptions import APIFetchError, ValidationError, SecretManagerError
+from models import ProcessedMetalModel,CurrencyRateModel,FredDataModel, NewsCountModel
+from exceptions import APIFetchError, ValidationError, SecretManagerError
 
-config = yaml.safe_load(open("dags/config.yaml"))
+# Get config file path relative to this file
+config_path = os.path.join(os.path.dirname(__file__), "config.yaml")
+config = yaml.safe_load(open(config_path))
 
 def get_secret(secret_name: str, project_id: str) -> str:
     """Fetch secret from Google Cloud Secret Manager.
