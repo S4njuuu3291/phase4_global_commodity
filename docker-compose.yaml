@@ -7,14 +7,17 @@ x-airflow-common: &airflow-common
     env_file:
         - ${ENV_FILE_PATH:-.env}
     environment: &airflow-common-env
-        AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+        AIRFLOW__CORE__EXECUTOR: LocalExecutor
         AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
         AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
-        AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres/airflow
-        AIRFLOW__CELERY__BROKER_URL: redis://:@redis:6379/0
+        AIRFLOW__CORE__PARALLELISM: "2"
+        AIRFLOW__CORE__DAG_CONCURRENCY: "1"
+        AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: "1"
+        AIRFLOW__SCHEDULER__PARSING_PROCESSES: "1"
+        AIRFLOW__SCHEDULER__MAX_THREADS: "1"
         AIRFLOW__CORE__FERNET_KEY: ""
         AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
-        AIRFLOW__CORE__LOAD_EXAMPLES: "true"
+        AIRFLOW__CORE__LOAD_EXAMPLES: "false"
         AIRFLOW__CORE__EXECUTION_API_SERVER_URL: "http://airflow-apiserver:8080/execution/"
         AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
         AIRFLOW_CONFIG: "/opt/airflow/config/airflow.cfg"
@@ -32,8 +35,6 @@ x-airflow-common: &airflow-common
         - ./global_commodity_dbt:/opt/airflow/global_commodity_dbt
     user: "${AIRFLOW_UID:-50000}:0"
     depends_on: &airflow-common-depends-on
-        redis:
-            condition: service_healthy
         postgres:
             condition: service_healthy
 
@@ -51,18 +52,6 @@ services:
             interval: 10s
             retries: 5
             start_period: 5s
-        restart: always
-
-    redis:
-        image: redis:7.2-bookworm
-        expose:
-            - 6379
-        healthcheck:
-            test: ["CMD", "redis-cli", "ping"]
-            interval: 10s
-            timeout: 30s
-            retries: 50
-            start_period: 30s
         restart: always
 
     airflow-apiserver:
@@ -122,31 +111,11 @@ services:
             airflow-init:
                 condition: service_completed_successfully
 
-    airflow-worker:
-        <<: *airflow-common
-        command: celery worker
-        healthcheck:
-            test:
-                - "CMD-SHELL"
-                - 'celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}" || celery --app airflow.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}"'
-            interval: 30s
-            timeout: 10s
-            retries: 5
-            start_period: 30s
-        environment:
-            <<: *airflow-common-env
-            DUMB_INIT_SETSID: "0"
-        restart: always
-        depends_on:
-            <<: *airflow-common-depends-on
-            airflow-apiserver:
-                condition: service_healthy
-            airflow-init:
-                condition: service_completed_successfully
-
     airflow-triggerer:
         <<: *airflow-common
         command: triggerer
+        profiles:
+            - optional
         healthcheck:
             test:
                 [
@@ -266,25 +235,6 @@ services:
             - airflow
         depends_on:
             <<: *airflow-common-depends-on
-
-    flower:
-        <<: *airflow-common
-        command: celery flower
-        profiles:
-            - flower
-        ports:
-            - "5555:5555"
-        healthcheck:
-            test: ["CMD", "curl", "--fail", "http://localhost:5555/"]
-            interval: 30s
-            timeout: 10s
-            retries: 5
-            start_period: 30s
-        restart: always
-        depends_on:
-            <<: *airflow-common-depends-on
-            airflow-init:
-                condition: service_completed_successfully
 
 volumes:
     postgres-db-volume:

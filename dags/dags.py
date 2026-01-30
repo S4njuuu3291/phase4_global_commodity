@@ -1,6 +1,6 @@
 import json
 import logging
-
+import yaml
 import pendulum
 from airflow.decorators import dag, task
 from airflow.operators.bash import BashOperator
@@ -10,7 +10,7 @@ from airflow.providers.google.cloud.hooks.gcs import GCSHook
 from airflow.providers.google.cloud.transfers.gcs_to_bigquery import (
     GCSToBigQueryOperator,
 )
-from utils import (
+from dags.utils import (
     fetch_currency_rate,
     fetch_fred_data,
     fetch_google_trends,
@@ -21,41 +21,51 @@ from utils import (
     to_ndjson,
 )
 
-project_id = "project-global-commodityy"
-bucket_name = "data-lake-bronze-project-global-commodityy"
+import dotenv
+import os
+
+dotenv.load_dotenv()
+config = yaml.safe_load(open("dags/config.yaml"))
+
+project_id = os.getenv("GCP_PROJECT_ID")
+bucket_name = os.getenv("BUCKET_NAME")
+
 DBT_PROJECT_DIR = "/opt/airflow/global_commodity_dbt"
 DBT_COMMAND_PREFIX = f"cd {DBT_PROJECT_DIR} && poetry run dbt"
 
+def get_all_keys():
+    logging.info("======== Fetching all secret keys ========")
+    try:
+        metal_key = get_secret("metal_price_api_key", project_id)
+        currency_key = get_secret("currency_rates_api_key", project_id)
+        fred_key = get_secret("fred_api_key", project_id)
+        news_key = get_secret("news_api_key", project_id)
+        return {
+            "metal_key": metal_key,
+            "currency_key": currency_key,
+            "fred_key": fred_key,
+            "news_key": news_key,
+        }
+    except Exception as e:
+        logging.error(f"======= Error fetching secret keys: {e} ======")
+        raise
 
 @dag(
     dag_id="global_commodity",
     schedule="@daily",
-    start_date=pendulum.datetime(2025, 12, 6, tz="UTC"),
-    catchup=True,
+    start_date=pendulum.datetime(2026, 1, 28, tz="UTC"),
+    catchup=False,
 )
 def global_commodity_dag():
     @task
-    def get_all_keys():
-        logging.info("======== Fetching all secret keys ========")
-        try:
-            metal_key = get_secret("metal_price_api_key", project_id)
-            currency_key = get_secret("currency_rates_api_key", project_id)
-            fred_key = get_secret("fred_api_key", project_id)
-            news_key = get_secret("news_api_key", project_id)
-            return {
-                "metal_key": metal_key,
-                "currency_key": currency_key,
-                "fred_key": fred_key,
-                "news_key": news_key,
-            }
-        except Exception as e:
-            logging.error(f"======= Error fetching secret keys: {e} ======")
-            raise
+    def task_get_all_keys():
+        return get_all_keys()
+
 
     @task
     def extract_val_load_gcs(keys: dict):
         logging.info("======== Fetching all commodity data ========")
-        keyword = ["gold", "silver", "platinum", "copper", "nickel"]
+        keyword = config["news_keywords"]
         try:
             metal_prices = fetch_metal_prices(keys["metal_key"])
             if metal_prices.get("status") != "success":
@@ -74,6 +84,8 @@ def global_commodity_dag():
             logging.info("======== FRED done ========")
 
             news_count = fetch_news_count(keys["news_key"], keyword)
+            if news_count is None:
+                raise ValueError("Failed to fetch news count")
             for key in news_count.keys():
                 if news_count[key] is None:
                     raise ValueError(f"Failed to fetch news count for {key}")
@@ -116,7 +128,7 @@ def global_commodity_dag():
         # RETURN path for xcom
         return destination_blob_name
 
-    get_all_keys_task = get_all_keys()
+    get_all_keys_task = task_get_all_keys()
     evl_task = extract_val_load_gcs(get_all_keys_task)
 
     gcs_object_path = evl_task
