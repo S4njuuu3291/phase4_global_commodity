@@ -1,0 +1,17 @@
+api_url:
+  metal: "https://api.metals.dev/v1/latest"
+  currency: "https://api.currencyfreaks.com/v2.0/rates/latest"
+  fred: "https://api.stlouisfed.org/fred/series/observations"
+  news_api: "https://newsapi.org/v2/everything"
+
+fred_series_ids:
+  - "DGS10"        # 10-Year Treasury Constant Maturity Rate
+  - "DTWEXBGS"    # Trade Weighted U.S. Dollar Index: Broad
+  - "CPIAUCSL"    # Consumer Price Index for All Urban Consumers: All Items
+
+news_keywords:
+  - "gold"
+  - "silver"
+  - "platinum"
+  - "copper"
+  - "nickel"

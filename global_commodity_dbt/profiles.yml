@@ -1,0 +1,14 @@
+# Nama profile ini harus sama dengan 'profile' yang didefinisikan di dbt_project.yml
+global_commodity_dbt:
+    target: dev
+    outputs:
+        dev:
+            type: bigquery
+            # the method is ADC
+            method: oauth
+            project: "project-global-commodityy"
+            # keyfile: "{{ env_var('GOOGLE_APPLICATION_CREDENTIALS') }}"
+            threads: 4
+            timeout_seconds: 300
+            location: asia-southeast2
+            dataset: dwh_commodity

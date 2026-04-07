@@ -1,0 +1,68 @@
+version: 2
+
+models:
+    - name: stg_commodity_prices
+      description: "Staging untuk harga metal dan jumlah news"
+      columns:
+          - name: execution_timestamp
+            tests:
+                - not_null
+          - name: metal_timestamp
+            tests:
+                - not_null
+          - name: gold_price
+            tests:
+                - not_null
+          - name: nickel_price
+            tests:
+                - not_null
+          - name: copper_price
+            tests:
+                - not_null
+          - name: platinum_price
+            tests:
+                - not_null
+          - name: silver_price
+            tests:
+                - not_null
+          - name: gold_news_count
+            tests:
+                - not_null
+
+    - name: stg_currency_exchange_rates
+      description: "Staging untuk currency exchange rates"
+      columns:
+          - name: currency_date
+            tests:
+                - not_null
+          - name: currency_base
+            tests:
+                - not_null
+          - name: currency_idr
+            tests:
+                - not_null
+          - name: currency_eur
+            tests:
+                - not_null
+          - name: currency_jpy
+            tests:
+                - not_null
+          - name: currency_cny
+            tests:
+                - not_null
+
+    - name: stg_fred_macro_observations
+      description: "Staging untuk data macro indicators (FRED)"
+      tests:
+          - unique:
+                column_name: "(series_id || '-' || date)"
+      columns:
+          - name: series_id
+            tests:
+                - not_null
+          - name: date
+            tests:
+                - not_null
+          - name: value
+            tests:
+                - not_null
