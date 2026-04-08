@@ -1,96 +1,82 @@
-x-airflow-common: &airflow-common
-    build:
-        context: .
-        dockerfile: Dockerfile
-        args:
-            AIRFLOW_IMAGE_NAME: ${AIRFLOW_IMAGE_NAME:-apache/airflow:3.1.3}
-    env_file:
-        - ${ENV_FILE_PATH:-.env}
-    environment: &airflow-common-env
-        AIRFLOW__CORE__EXECUTOR: LocalExecutor
-        AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
-        # OPTIMASI RAM: Batasi jumlah proses
-        AIRFLOW__CORE__PARALLELISM: "2"
-        AIRFLOW__CORE__DAG_CONCURRENCY: "1"
-        AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: "1"
-        AIRFLOW__SCHEDULER__PARSING_PROCESSES: "1"
-        AIRFLOW__SCHEDULER__MAX_THREADS: "1"
-        # GABUNGKAN DAG PROCESSOR KE SCHEDULER
-        AIRFLOW__SCHEDULER__STANDALONE_DAG_PROCESSOR: "false" 
-        AIRFLOW__CORE__LOAD_EXAMPLES: "false"
-        AIRFLOW_CONFIG: "/opt/airflow/config/airflow.cfg"
-        GOOGLE_APPLICATION_CREDENTIALS: "/opt/airflow/keys/key.json"
-        GCP_PROJECT_ID: ${GCP_PROJECT_ID}
+version: '3.8'
 
-    volumes:
-        - ./dags:/opt/airflow/dags
-        - ./logs:/opt/airflow/logs
-        - ./config:/opt/airflow/config
-        - ./plugins:/opt/airflow/plugins
-        - ./keys:/opt/airflow/keys:ro
-    user: "${AIRFLOW_UID:-50000}:0"
-    depends_on: &airflow-common-depends-on
-        postgres:
-            condition: service_healthy
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  env_file:
+    - .env
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    # Optimasi RAM (Penting untuk LocalExecutor)
+    AIRFLOW__CORE__PARALLELISM: 2
+    AIRFLOW__CORE__DAG_CONCURRENCY: 1
+    # Memastikan python menemukan modul lokal Anda
+    PYTHONPATH: /opt/airflow
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./plugins:/opt/airflow/plugins
+    - ./config:/opt/airflow/config
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    postgres:
+      condition: service_healthy
 
 services:
-    postgres:
-        image: postgres:16
-        environment:
-            POSTGRES_USER: ${POSTGRES_USER}
-            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-            POSTGRES_DB: ${POSTGRES_DB}
-        volumes:
-            - postgres-db-volume:/var/lib/postgresql/data
-        healthcheck:
-            test: ["CMD", "pg_isready", "-U", "airflow"]
-            interval: 10s
-            retries: 5
-        restart: always
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-airflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-airflow}
+      POSTGRES_DB: ${POSTGRES_DB:-airflow}
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER:-airflow}"]
+      interval: 10s
+      retries: 5
+    restart: always
 
-    airflow-webserver: # Di AF3 bisa disebut API Server + UI
-        <<: *airflow-common
-        command: webserver # Gunakan webserver untuk bundle UI
-        ports:
-            - "8080:8080"
-        healthcheck:
-            test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
-            interval: 30s
-            timeout: 10s
-            retries: 5
-        restart: always
-        depends_on:
-            <<: *airflow-common-depends-on
-            airflow-init:
-                condition: service_completed_successfully
+  airflow-webserver:
+    <<: *airflow-common
+    command: api-server
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: always
 
-    airflow-scheduler:
-        <<: *airflow-common
-        command: scheduler
-        healthcheck:
-            test: ["CMD-SHELL", 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
-            interval: 30s
-            timeout: 10s
-            retries: 5
-        restart: always
-        depends_on:
-            <<: *airflow-common-depends-on
-            airflow-init:
-                condition: service_completed_successfully
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    restart: always
 
-    airflow-init:
-        <<: *airflow-common
-        entrypoint: /bin/bash
-        command:
-            - -c
-            - |
-                mkdir -p /opt/airflow/{logs,dags,plugins,config}
-                airflow db migrate
-                airflow users create --username admin --firstname admin --lastname admin --role Admin --email admin@example.com --password admin
-        environment:
-            <<: *airflow-common-env
-            _AIRFLOW_DB_MIGRATE: "true"
-        user: "0:0"
+  airflow-init:
+    <<: *airflow-common
+    user: "0:0" # Gunakan root hanya untuk inisialisasi folder jika perlu
+    command:
+      - bash
+      - -c
+      - |
+        # Buat folder jika belum ada dengan permission yang benar
+        mkdir -p /opt/airflow/{logs,dags,plugins,config}
+        chown -R 50000:0 /opt/airflow
+        
+        # Jalankan sebagai user airflow (50000)
+        su -s /bin/bash airflow -c "airflow db migrate && \
+        airflow users create \
+          --username admin \
+          --firstname admin \
+          --lastname admin \
+          --role Admin \
+          --email admin@example.com \
+          --password admin || true"
 
 volumes:
-    postgres-db-volume:
+  postgres-db-volume:

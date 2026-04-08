@@ -153,8 +153,6 @@ class NewsCountModel(BaseModel):
             raise ValueError('status must be "ok"')
         return v
     
-    # apa artinya annotated di atas?
-    # Annotated[int, Field(ge=0)] berarti bahwa totalResults harus berupa integer yang nilainya lebih besar dari atau sama dengan 0 (ge = greater than or equal to). 
 
     # harus dibungkus Annotated? kalau iya kenapa?
     # Ya, harus dibungkus dengan Annotated karena ini adalah cara untuk menambahkan metadata

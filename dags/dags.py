@@ -8,7 +8,6 @@ from google.cloud import storage, bigquery
 from utils import (
     fetch_currency_rate,
     fetch_fred_data,
-    fetch_google_trends,
     fetch_metal_prices,
     fetch_news_count,
     get_secret,
