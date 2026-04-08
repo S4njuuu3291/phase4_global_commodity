@@ -8,6 +8,15 @@ resource "aws_s3_bucket" "data_lake" {
   }
 }
 
+resource "aws_s3_bucket_public_access_block" "example" {
+  bucket = aws_s3_bucket.data_lake.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
 # Membuat Parameter untuk URL (Tipe String biasa karena tidak rahasia)
 resource "aws_ssm_parameter" "api_urls" {
   for_each = var.api_configs

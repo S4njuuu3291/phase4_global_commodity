@@ -5,10 +5,10 @@ import pendulum
 from datetime import datetime
 import os
 
-from airflow.sdk import dag, task
-from airflow.providers.standard.operators.bash import BashOperator
+from airflow.decorators import dag, task
+from airflow.operators.bash import BashOperator
 
-from utils import fetch_metal_prices, fetch_currency_rate, fetch_fred_data, fetch_news
+from utils import fetch_metal_prices, fetch_currency_rate, fetch_fred_data, fetch_news, transform_metal_prices, transform_currency_rates, transform_fred_data, transform_news
 
 # Get config file path relative to this file
 config_path = os.path.join(os.path.dirname(__file__), "config.yaml")
@@ -54,7 +54,23 @@ def commodity_pipeline():
 
     @task
     def ingest_news():
-        return fetch_news("news")
+        return fetch_news("news_api")
+    
+    @task
+    def transform_metal(metal_path):
+        return transform_metal_prices(metal_path)
+
+    @task
+    def transform_currency(currency_path):
+        return transform_currency_rates(currency_path)
+    
+    @task
+    def transform_fred(fred_path):
+        return transform_fred_data(fred_path)
+    
+    @task
+    def transform_news_task(news_path):
+        return transform_news(news_path)
 
     # @task
     # def transform_silver(metal_path, currency_path, fred_path, news_path):
@@ -70,8 +86,11 @@ def commodity_pipeline():
     f_path = ingest_fred()
     n_path = ingest_news()
 
-    # 2. Kirim semua path hasil Bronze ke Silver (Implicit Dependency)
-    # transform_silver(m_path, c_path, f_path, n_path)
+    # 2. Jalankan semua transformasi setelah ingestion selesai (parallel)
+    transform_metal(m_path)
+    transform_currency(c_path)
+    transform_fred(f_path)
+    transform_news_task(n_path)
 
 # Eksekusi DAG
 commodity_pipeline_dag = commodity_pipeline()

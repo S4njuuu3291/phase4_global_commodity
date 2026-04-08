@@ -1,10 +1,12 @@
-# Gunakan versi stabil terbaru
-ARG AIRFLOW_IMAGE_NAME=apache/airflow:3.1.8
-FROM ${AIRFLOW_IMAGE_NAME}
+FROM apache/airflow:2.10.2-python3.12
+
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
 USER airflow
-
-# Copy requirements.txt
+# Copy requirements jika ada
 COPY requirements.txt .
-
 RUN pip install --no-cache-dir -r requirements.txt

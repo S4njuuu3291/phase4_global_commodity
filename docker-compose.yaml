@@ -1,23 +1,23 @@
-version: '3.8'
-
 x-airflow-common: &airflow-common
   build:
     context: .
     dockerfile: Dockerfile
   env_file:
     - .env
+  user: "${AIRFLOW_UID:-50000}:0"
   environment: &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
-    # Optimasi RAM (Penting untuk LocalExecutor)
-    AIRFLOW__CORE__PARALLELISM: 2
-    AIRFLOW__CORE__DAG_CONCURRENCY: 1
-    # Memastikan python menemukan modul lokal Anda
-    PYTHONPATH: /opt/airflow:/opt/airflow/dags
-    # Force DAG parsing & discovery
-    AIRFLOW__CORE__DAG_DISCOVERY_SAFE_MODE: 'false'
     AIRFLOW__CORE__LOAD_DEFAULT_CONNECTIONS: 'false'
+    # Optimasi RAM VPS 8GB
+    AIRFLOW__CORE__PARALLELISM: 2
+    AIRFLOW__CORE__DAG_CONCURRENCY: 2
+    AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: 1
+    # Python Path & Discovery
+    PYTHONPATH: /opt/airflow:/opt/airflow/dags
+    AIRFLOW__CORE__DAG_DISCOVERY_SAFE_MODE: 'false'
+    # Bypass Login (Opsional, hapus jika ingin pakai password admin)
     AIRFLOW__WEBSERVER__AUTHENTICATE: 'False'
     AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.default'
 
@@ -27,7 +27,6 @@ x-airflow-common: &airflow-common
     - ./plugins:/opt/airflow/plugins
     - ./config:/opt/airflow/config
     - ~/.aws:/home/airflow/.aws:ro
-  user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     postgres:
       condition: service_healthy
@@ -49,7 +48,7 @@ services:
 
   airflow-webserver:
     <<: *airflow-common
-    command: api-server
+    command: webserver
     ports:
       - "8080:8080"
     healthcheck:
@@ -66,23 +65,20 @@ services:
 
   airflow-init:
     <<: *airflow-common
-    user: "0:0" # Gunakan root hanya untuk inisialisasi folder jika perlu
+    user: "0:0"
     command:
       - bash
       - -c
       - |
-        # Buat folder jika belum ada dengan permission yang benar
-        mkdir -p /opt/airflow/{logs,dags,plugins,config}
-        
-        # Jalankan sebagai user airflow (50000)
-        su -s /bin/bash airflow -c "airflow db migrate && \
+        # Inisialisasi Database Airflow 2.x
+        airflow db init && \
         airflow users create \
           --username admin \
           --firstname admin \
           --lastname admin \
           --role Admin \
           --email admin@example.com \
-          --password admin || true"
+          --password admin || true
 
 volumes:
   postgres-db-volume:

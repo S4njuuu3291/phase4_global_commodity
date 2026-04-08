@@ -16,6 +16,17 @@ news_keywords:
   - "copper"
   - "nickel"
 
+currency:
+  - "USD"
+  - "IDR"
+  - "EUR"
+  - "JPY"
+  - "GBP"
+  - "AUD"
+  - "CAD"
+  - "CNY"
+  - "SGD"
+
 bucket_name: "global-commodity-data-lake-commo-dev"
 
 bronze_prefix: "bronze"
