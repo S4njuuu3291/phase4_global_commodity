@@ -47,7 +47,7 @@ class ValidationError(CommodityDAGException):
         super().__init__(message)
 
 
-class GCSUploadError(CommodityDAGException):
+class S3UploadError(CommodityDAGException):
     """Raised ketika GCS upload gagal"""
     
     def __init__(self, bucket: str, object_name: str, message: str):

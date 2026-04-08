@@ -15,3 +15,8 @@ news_keywords:
   - "platinum"
   - "copper"
   - "nickel"
+
+bucket_name: "global-commodity-data-lake-commo-dev"
+
+bronze_prefix: "bronze"
+silver_prefix: "silver"

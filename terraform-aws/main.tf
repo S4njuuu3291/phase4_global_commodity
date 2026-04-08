@@ -8,15 +8,26 @@ resource "aws_s3_bucket" "data_lake" {
   }
 }
 
-# 2. SSM Parameter Store (Secret Manager versi "Miskin" / Murah & Efektif)
-resource "aws_ssm_parameter" "db_password" {
-  name        = "/${var.environment}/database/password"
-  description = "Password untuk Database Production"
-  type        = "SecureString"
-  value       = "SangatRahasia123!" # Di industri, ini biasanya diisi lewat variable
+# Membuat Parameter untuk URL (Tipe String biasa karena tidak rahasia)
+resource "aws_ssm_parameter" "api_urls" {
+  for_each = var.api_configs
+  
+  name  = "/global-commodity/datasource/${each.key}/url"
+  type  = "String"
+  value = each.value.url
+}
+
+# Membuat Parameter untuk API KEY (Tipe SecureString karena rahasia)
+resource "aws_ssm_parameter" "api_keys" {
+  for_each = var.api_configs
+  
+  name  = "/global-commodity/datasource/${each.key}/api_key"
+  type  = "SecureString"
+  value = each.value.key
 }
 
 # 3. AWS Glue Catalog Database (Metadata untuk Query di Athena)
 resource "aws_glue_catalog_database" "commodity_db" {
   name = "ds_commodity_staged"
 }
+

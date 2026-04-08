@@ -14,12 +14,19 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__PARALLELISM: 2
     AIRFLOW__CORE__DAG_CONCURRENCY: 1
     # Memastikan python menemukan modul lokal Anda
-    PYTHONPATH: /opt/airflow
+    PYTHONPATH: /opt/airflow:/opt/airflow/dags
+    # Force DAG parsing & discovery
+    AIRFLOW__CORE__DAG_DISCOVERY_SAFE_MODE: 'false'
+    AIRFLOW__CORE__LOAD_DEFAULT_CONNECTIONS: 'false'
+    AIRFLOW__WEBSERVER__AUTHENTICATE: 'False'
+    AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.default'
+
   volumes:
     - ./dags:/opt/airflow/dags
     - ./logs:/opt/airflow/logs
     - ./plugins:/opt/airflow/plugins
     - ./config:/opt/airflow/config
+    - ~/.aws:/home/airflow/.aws:ro
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     postgres:
@@ -66,7 +73,6 @@ services:
       - |
         # Buat folder jika belum ada dengan permission yang benar
         mkdir -p /opt/airflow/{logs,dags,plugins,config}
-        chown -R 50000:0 /opt/airflow
         
         # Jalankan sebagai user airflow (50000)
         su -s /bin/bash airflow -c "airflow db migrate && \
