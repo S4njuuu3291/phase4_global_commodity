@@ -3,7 +3,8 @@ import logging
 import json
 import sys
 from typing import Optional, Dict, List, Any
-
+import pandas as pd
+import io
 import httpx
 import yaml
 import os
@@ -94,9 +95,6 @@ def get_secret_ssm(api_name: str):
     except ClientError as e:
         print(f"[-] Error AWS: {e}")
         return None
-
-
-
 
 @retry(
     stop=stop_after_attempt(3),
@@ -215,6 +213,35 @@ def read_response_from_s3(
         logging.error(f"Unexpected error during S3 read: {e}")
         return None
 
+def upload_parquet_to_s3(data: List[Dict[str, Any]], bucket_name: str, s3_key: str) -> bool:
+    """Upload a Pandas DataFrame to S3 in Parquet format."""
+    _init_aws_clients()
+
+    try:
+        if not data:
+            logging.error("Attempted to upload empty data to S3.")
+            return False
+        
+        df = pd.DataFrame(data)
+        buffer = io.BytesIO()
+        df.to_parquet(buffer, index=False)
+        buffer.seek(0)
+
+        s3_client = boto3.client('s3')
+        s3_client.put_object(
+            Bucket=bucket_name,
+            Key=s3_key,
+            Body=buffer,
+            ContentType='application/octet-stream'
+        )
+        
+        logging.info(f"Parquet upload successful to s3://{bucket_name}/{s3_key}")
+        return True
+    except ClientError as e:
+        error_code = e.response['Error']['Code']
+        logging.error(f"AWS Error [{error_code}]: {e}")
+        return False
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=10),
@@ -273,7 +300,8 @@ def fetch_metal_prices(ssm_keyword: str) -> Optional[str]:
         logging.error(f"Error fetching metal prices: {e}")
         return None
 
-    s3_key = f"{config['bronze_prefix']}/{timestamp}/metal_prices-{timestamp}.json"
+    partition_date = datetime.datetime.now().strftime("%Y-%m-%d")
+    s3_key = f"{config['bronze_prefix']}/metal/ingested_at={partition_date}/data.json"
 
     upload_success = upload_response_to_s3(data, bucket_name, s3_key)
     if not upload_success:
@@ -328,8 +356,8 @@ def fetch_currency_rate(ssm_keyword) -> Optional[str]:
         print(f"Error fetching currency rates: {e}")
         return None
 
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:00:00")
-    s3_key = f"{config['bronze_prefix']}/{timestamp}/currency_rates-{timestamp}.json"
+    partition_date = datetime.datetime.now().strftime("%Y-%m-%d")
+    s3_key = f"{config['bronze_prefix']}/currency/ingested_at={partition_date}/data.json"
 
     upload_success = upload_response_to_s3(data, bucket_name, s3_key)
     if not upload_success:
@@ -340,7 +368,7 @@ def fetch_currency_rate(ssm_keyword) -> Optional[str]:
 
 @retry(
     stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=10),
+    wait=wait_exponential(multiplier=1, min=2, max=6),
     retry=retry_if_exception_type((httpx.RequestError, httpx.HTTPStatusError)),
 )
 def fetch_fred_data(ssm_keyword: str) -> Optional[str]:
@@ -406,14 +434,14 @@ def fetch_fred_data(ssm_keyword: str) -> Optional[str]:
             logging.error(f"Error fetching FRED data for {series_id}: {e}")
             return None
 
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:00:00")
-        s3_key = f"{config['bronze_prefix']}/{timestamp}/fred_data-{timestamp}.json"
+    partition_date = datetime.datetime.now().strftime("%Y-%m-%d")
+    s3_key = f"{config['bronze_prefix']}/fred/ingested_at={partition_date}/data.json"
 
-        upload_success = upload_response_to_s3(macro_datas, bucket_name, s3_key)
-        if not upload_success:
-            logging.error("Failed to upload FRED data to S3.")
-        else:
-            logging.info("FRED data uploaded to S3 successfully.")
+    upload_success = upload_response_to_s3(macro_datas, bucket_name, s3_key)
+    if not upload_success:
+        logging.error("Failed to upload FRED data to S3.")
+    else:
+        logging.info("FRED data uploaded to S3 successfully.")
             
     return s3_key
 
@@ -487,7 +515,8 @@ def fetch_news(ssm_keyword: str) -> Optional[str]:
         logging.error(f"Configuration error: {e}")
         return None
     
-    s3_key = f"{config['bronze_prefix']}/{timestamp}/news_data-{timestamp}.json"
+    partition_date = datetime.datetime.now().strftime("%Y-%m-%d")
+    s3_key = f"{config['bronze_prefix']}/news/ingested_at={partition_date}/data.json"
 
     upload_success = upload_response_to_s3(news_raw_response, bucket_name, s3_key)
     if not upload_success:
@@ -577,11 +606,11 @@ def transform_metal_prices(metal_s3_key: str) -> Optional[str]:
         logging.info(f"Successfully transformed {len(processed_records)} metal price records")
         
         # Upload to silver layer
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:00:00")
-        s3_key = f"{config['silver_prefix']}/{timestamp}/processed_metal_prices-{timestamp}.json"
+        partition_date = datetime.datetime.now().strftime("%Y-%m-%d")
+        s3_key = f"{config['silver_prefix']}/metal/ingested_at={partition_date}/data.parquet"
         
         logging.info(f"Uploading transformed data to silver layer: {s3_key}")
-        upload_success = upload_response_to_s3(processed_records, bucket_name, s3_key)
+        upload_success = upload_parquet_to_s3(processed_records, bucket_name, s3_key)
         
         if not upload_success:
             logging.error("[ERROR] Failed to upload processed metal prices to S3")
@@ -642,11 +671,11 @@ def transform_currency_rates(currency_s3_key: str) -> Optional[str]:
         logging.info(f"Successfully transformed {len(processed_records)} currency rate records")
         
         # Upload to silver layer
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:00:00")
-        s3_key = f"{config['silver_prefix']}/{timestamp}/processed_currency_rates-{timestamp}.json"
+        partition_date = datetime.datetime.now().strftime("%Y-%m-%d")
+        s3_key = f"{config['silver_prefix']}/currency/ingested_at={partition_date}/data.parquet"
         
         logging.info(f"Uploading transformed data to silver layer: {s3_key}")
-        upload_success = upload_response_to_s3(processed_records, bucket_name, s3_key)
+        upload_success = upload_parquet_to_s3(processed_records, bucket_name, s3_key)
         
         if not upload_success:
             logging.error("[ERROR] Failed to upload processed currency rates to S3")
@@ -711,11 +740,11 @@ def transform_fred_data(fred_s3_key: str) -> Optional[str]:
         logging.info(f"Successfully transformed {len(processed_records)} FRED data records")
         
         # Upload to silver layer
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:00:00")
-        s3_key = f"{config['silver_prefix']}/{timestamp}/processed_fred_data-{timestamp}.json"
+        partition_date = datetime.datetime.now().strftime("%Y-%m-%d")
+        s3_key = f"{config['silver_prefix']}/fred/ingested_at={partition_date}/data.parquet"
         
         logging.info(f"Uploading transformed data to silver layer: {s3_key}")
-        upload_success = upload_response_to_s3(processed_records, bucket_name, s3_key)
+        upload_success = upload_parquet_to_s3(processed_records, bucket_name, s3_key)
         
         if not upload_success:
             logging.error("[ERROR] Failed to upload processed FRED data to S3")
@@ -782,11 +811,11 @@ def transform_news(news_s3_key: str) -> Optional[str]:
         logging.info(f"Successfully transformed {len(processed_records)} news records")
         
         # Upload to silver layer
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:00:00")
-        s3_key = f"{config['silver_prefix']}/{timestamp}/processed_news_data-{timestamp}.json"
+        partition_date = datetime.datetime.now().strftime("%Y-%m-%d")
+        s3_key = f"{config['silver_prefix']}/news/ingested_at={partition_date}/data.parquet"
         
         logging.info(f"Uploading transformed data to silver layer: {s3_key}")
-        upload_success = upload_response_to_s3(processed_records, bucket_name, s3_key)
+        upload_success = upload_parquet_to_s3(processed_records, bucket_name, s3_key)
         
         if not upload_success:
             logging.error("[ERROR] Failed to upload processed news data to S3")

@@ -10,3 +10,6 @@ USER airflow
 # Copy requirements jika ada
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Install dbt-athena-community untuk transformasi data
+RUN pip install --no-cache-dir dbt-athena-community

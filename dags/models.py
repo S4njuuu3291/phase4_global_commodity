@@ -126,7 +126,7 @@ class CurrencyRateModel(BaseModel):
 class FredDataModel(BaseModel):
     series_id: str
     observation_date: datetime.datetime
-    observation_values: Annotated[float, Field(gt=0)]
+    observation_values: Annotated[float | None, Field(gt=0)] = None
     units: str
     ingested_at: datetime.datetime = Field(default_factory=datetime.datetime.utcnow)
 
@@ -136,6 +136,7 @@ class FredDataModel(BaseModel):
         if v == "." or v is None:
             return None
         return float(v)
+
 # ===========================
 # NEWS COUNT MODEL
 # ===========================

@@ -39,4 +39,3 @@ resource "aws_ssm_parameter" "api_keys" {
 resource "aws_glue_catalog_database" "commodity_db" {
   name = "ds_commodity_staged"
 }
-
