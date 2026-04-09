@@ -1,6 +1,7 @@
 from pydantic import BaseModel, Field, field_validator, field_validator
 from typing import Annotated,Dict
 import datetime
+import dateutil.parser
 
 # ==========================
 #   PROCESSED METAL MODEL
@@ -22,18 +23,20 @@ import datetime
 }
 """
 class ProcessedMetalModel(BaseModel):
-    timestamp: str
-    status: str
-    metals: Dict[str, Annotated[float, Field(gt=0)]]
+    event_timestamp: datetime.datetime
+    metal_symbol: str
+    price_usd: Annotated[float, Field(gt=0)]
     currency_base: str
+    unit: str
+    ingested_at: datetime.datetime = Field(default_factory=datetime.datetime.utcnow)
 
-    @field_validator('metals')
+    @field_validator('metal_symbol')
     @classmethod
     def validate_is_not_empty(cls, v):
         if not v:
-            raise ValueError('metals dictionary must not be empty')
+            raise ValueError('metal symbol must not be empty')
         return v
-
+    
 # ==========================
 #   CURRENCY RATE MODELS
 # ==========================
@@ -49,15 +52,29 @@ class ProcessedMetalModel(BaseModel):
 }
 """
 class CurrencyRateModel(BaseModel):
-    date: str
-    base: str
-    rates: Dict[str, Annotated[float, Field(gt=0)]]
+    rate_date: datetime.datetime
+    currency_code: str
+    exchange_rate: Annotated[float, Field(gt=0)]
+    base_currency: str
+    ingested_at: datetime.datetime = Field(default_factory=datetime.datetime.utcnow)
 
-    @field_validator('rates')
+    @field_validator('exchange_rate')
     @classmethod
     def validate_is_not_empty(cls, v):
         if not v:
-            raise ValueError('rates dictionary must not be empty')
+            raise ValueError('exchange rate must not be empty')
+        return v
+    
+    @field_validator('rate_date', mode='before')
+    @classmethod
+    def parse_flexible_date(cls, v):
+        if isinstance(v, str):
+            try:
+                # dateutil.parser bisa handle "+00" dengan benar
+                return dateutil.parser.parse(v)
+            except Exception:
+                # Fallback manual jika perlu
+                return v.split('+')[0].strip()
         return v
 
 # ===========================
@@ -107,31 +124,19 @@ class CurrencyRateModel(BaseModel):
 }
 """
 class FredDataModel(BaseModel):
-    realtime_start: str
-    realtime_end: str
-    observation_start: str
-    observation_end: str
+    series_id: str
+    observation_date: datetime.datetime
+    observation_values: Annotated[float | None, Field(gt=0)] = None
     units: str
-    output_type: int
-    file_type: str
-    order_by: str
-    sort_order: str
-    count: Annotated[int, Field(ge=0)]
-    offset: Annotated[int, Field(ge=0)]
-    limit: Annotated[int, Field(ge=0)]
-    # the dict must contain date and value keys
-    observations: Annotated[list[Dict[str, str]], Field(min_length=1)]
+    ingested_at: datetime.datetime = Field(default_factory=datetime.datetime.utcnow)
 
-    @field_validator('observations')
+    @field_validator('observation_values', mode='before')
     @classmethod
-    def validate_observations_not_empty(cls, v):
-        if not v:
-            raise ValueError('observations list must not be empty')
-        for obs in v:
-            if 'date' not in obs or 'value' not in obs:
-                raise ValueError('each observation must contain date and value keys')
-        return v
-    
+    def handle_fred_dots(cls, v):
+        if v == "." or v is None:
+            return None
+        return float(v)
+
 # ===========================
 # NEWS COUNT MODEL
 # ===========================
@@ -143,8 +148,11 @@ class FredDataModel(BaseModel):
 }
 """
 class NewsCountModel(BaseModel):
+    news_timestamp: datetime.datetime
+    keywords: str
+    total_mentions: Annotated[int, Field(ge=0)]
     status: str
-    totalResults: int = Field(...,ge=0)
+    ingested_at: datetime.datetime = Field(default_factory=datetime.datetime.utcnow)
 
     @field_validator('status')
     @classmethod
@@ -152,19 +160,3 @@ class NewsCountModel(BaseModel):
         if v != "ok":
             raise ValueError('status must be "ok"')
         return v
-    
-    # apa artinya annotated di atas?
-    # Annotated[int, Field(ge=0)] berarti bahwa totalResults harus berupa integer yang nilainya lebih besar dari atau sama dengan 0 (ge = greater than or equal to). 
-
-    # harus dibungkus Annotated? kalau iya kenapa?
-    # Ya, harus dibungkus dengan Annotated karena ini adalah cara untuk menambahkan metadata
-    # ke tipe data dasar (dalam hal ini int) menggunakan Pydantic. Dengan menggunakan Annotated,
-    # kita dapat menerapkan validasi tambahan pada field tersebut, seperti memastikan bahwa
-    # totalResults tidak negatif.
-
-    # emang gk bisa cuman field(ge=0) aja?
-    # Tidak, tidak bisa. Field(ge=0) sendiri tidak cukup karena Pydantic perlu tahu tipe data dasar yang sedang divalidasi.
-    # Dengan menggunakan Annotated, kita memberi tahu Pydantic bahwa totalResults adalah sebuah integer
-    # dan juga menerapkan aturan validasi bahwa nilainya harus lebih besar dari atau sama dengan 0.
-    # kode di atas ga bisa emang?
-

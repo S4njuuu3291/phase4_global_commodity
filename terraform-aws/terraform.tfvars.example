@@ -1,0 +1,8 @@
+# Terraform Variables Configuration
+# Edit credentials/api_keys.tfvars dengan API keys yang sesuai
+
+# How to apply:
+# terraform apply -var-file="credentials/api_keys.tfvars"
+
+# Or set default environment (optional):
+environment = "commo-dev"

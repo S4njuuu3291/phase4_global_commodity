@@ -1,13 +1,24 @@
 # Sensitive files
 keys/*
 .env
+.env.local
+.env.*.local
 *.key
 *.pem
 sa_key.json
+credentials/
+~/.aws/
+
+# AWS Credentials & Config
+.aws/
+aws_credentials.txt
+aws_secret.json
 
 # Logs
 logs/*
 *.log
+*.log.*
+pip-log.txt
 
 # Python
 __pycache__/
@@ -34,6 +45,12 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+MANIFEST
+.pytype/
+.mypy_cache/
+
+# Poetry
+poetry.lock
 
 # Testing
 .pytest_cache/
@@ -41,6 +58,7 @@ wheels/
 htmlcov/
 .tox/
 .hypothesis/
+.coverage.*
 
 # dbt
 global_commodity_dbt/target/
@@ -51,12 +69,22 @@ global_commodity_dbt/logs/
 airflow.db
 airflow-webserver.pid
 standalone_admin_password.txt
+unittests.cfg
+airflow_settings.yaml
 
-# Terraform (if used)
+# Terraform
 tf-build/*
 *.tfstate
 *.tfstate.backup
 .terraform/
+.terraform.lock.hcl
+terraform.tfvars
+terraform.tfvars.json
+*.tfplan
+
+# Docker
+docker-compose.override.yml
+.dockerignore
 
 # IDEs
 .vscode/
@@ -64,12 +92,37 @@ tf-build/*
 *.swp
 *.swo
 *~
+.sublime-project
+.sublime-workspace
+*.code-workspace
 
 # OS
 .DS_Store
 Thumbs.db
 *.Zone.Identifier
+.AppleDouble
+.LSOverride
+
+# Data & Cache
+*.pkl
+*.pickle
+*.joblib
+*.parquet
+*.csv
+*.xlsx
+*.xls
+samples/*
+!samples/.gitkeep
+cache/
+tmp/
+temp/
 
 # Misc
 *.bak
 *.tmp
+.gradle/
+build/
+*.tar.gz
+*.zip
+dist/
+node_modules/

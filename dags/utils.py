@@ -1,89 +1,275 @@
 import datetime
 import logging
-import time
 import json
+import sys
 from typing import Optional, Dict, List, Any
-
+import pandas as pd
+import io
 import httpx
-from google.cloud import secretmanager
-from pytrends.request import TrendReq
 import yaml
 import os
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-from models import ProcessedMetalModel,CurrencyRateModel,FredDataModel, NewsCountModel
-from exceptions import APIFetchError, ValidationError, SecretManagerError
+import boto3
+from botocore.exceptions import ClientError
+from models import ProcessedMetalModel, CurrencyRateModel, FredDataModel, NewsCountModel
+
+# Ensure dags folder is on sys.path for Airflow DAG parsing
+_DAGS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _DAGS_DIR not in sys.path:
+    sys.path.insert(0, _DAGS_DIR)
+
+# Import with retry logic in case sys.path isn't set yet
+try:
+    # from models import ProcessedMetalModel,CurrencyRateModel,FredDataModel
+    from exceptions import APIFetchError, ValidationError, SecretManagerError, S3UploadError
+except ModuleNotFoundError as e:
+    # Fallback: explicitly add /opt/airflow/dags to sys.path
+    if '/opt/airflow/dags' not in sys.path:
+        sys.path.insert(0, '/opt/airflow/dags')
+    # Retry import
+    from exceptions import APIFetchError, ValidationError, SecretManagerError, S3UploadError
+
+# Setup konfigurasi log
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)    # Print ke terminal
+    ]
+)
 
 # Get config file path relative to this file
 config_path = os.path.join(os.path.dirname(__file__), "config.yaml")
-config = yaml.safe_load(open(config_path))
+try:
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+except Exception as e:
+    logging.error(f"Failed to load config.yaml: {e}")
+    config = {}
 
-def get_secret(secret_name: str, project_id: str) -> str:
-    """Fetch secret from Google Cloud Secret Manager.
+# Lazy initialization untuk AWS clients
+# Akan diinisialisasi hanya saat function dipanggil, bukan saat import
+ssm = None
+s3 = None
+bucket_name = config.get("bucket_name", "")
+
+def _init_aws_clients():
+    """Initialize AWS clients lazily on first use"""
+    global ssm, s3
+    if ssm is None or s3 is None:
+        try:
+            ssm = boto3.client('ssm', region_name='ap-southeast-1')
+            s3 = boto3.client('s3', region_name='ap-southeast-1')
+            logging.info("AWS clients initialized successfully")
+        except Exception as e:
+            logging.error(f"Failed to initialize AWS clients: {e}")
+            raise
+
+def get_secret_ssm(api_name: str):
+    """Fetch API config from AWS SSM Parameter Store"""
+    _init_aws_clients()
     
-    Retrieves the latest version of a secret from GCP Secret Manager.
-    Raises SecretManagerError if secret cannot be accessed.
+    # Sesuaikan dengan path hasil Terraform kamu
+    path = f"/global-commodity/datasource/{api_name}/"
+    
+    try:
+        # Gunakan get_parameters_by_path untuk ambil semua isi folder
+        response = ssm.get_parameters_by_path(
+            Path=path,
+            Recursive=True,
+            WithDecryption=True
+        )
+
+        if not response['Parameters']:
+            print(f"[-] Data tidak ditemukan untuk path: {path}")
+            return None
+
+        config = {
+            param['Name'].split('/')[-1]: param['Value'].strip() 
+            for param in response['Parameters']
+        }
+
+        print(f"[+] Berhasil mengambil config untuk: {api_name}")
+        return config
+
+    except ClientError as e:
+        print(f"[-] Error AWS: {e}")
+        return None
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10)
+)
+def upload_response_to_s3(
+    data: Dict[str, Any], 
+    bucket_name: str, 
+    s3_key: str
+) -> bool:
+    """
+    Defensive function to upload dictionary data to S3 as NDJSON/JSON.
+    """
+    _init_aws_clients()
+    
+    try:
+        # 1. Pre-upload Validation
+        if not data:
+            logging.error("Attempted to upload empty data to S3.")
+            return False
+            
+        # 2. Convert to String (NDJSON ready)
+        # Kita pakai ensure_ascii=False agar karakter unik tetap aman
+        json_data = json.dumps(data, ensure_ascii=False) + "\n"
+        
+        # 3. AWS Client Setup
+        # Di AWS, session management lebih baik dilakukan via IAM Role
+        s3_client = boto3.client('s3')
+        
+        logging.info(f"Uploading data to s3://{bucket_name}/{s3_key}")
+        
+        # 4. Execution with Body Check
+        s3_client.put_object(
+            Bucket=bucket_name,
+            Key=s3_key,
+            Body=json_data,
+            ContentType='application/x-ndjson'
+        )
+        
+        logging.info("Upload successful.")
+        return True
+
+    except ClientError as e:
+        # Menangkap error spesifik AWS (misal: Bucket tidak ada atau Access Denied)
+        error_code = e.response['Error']['Code']
+        logging.error(f"AWS Error [{error_code}]: {e}")
+        raise S3UploadError(bucket_name, s3_key, str(e))
+        
+    except Exception as e:
+        # Menangkap error tak terduga (misal: JSON Serialization error)
+        logging.error(f"Unexpected error during S3 upload: {e}")
+        return False
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10)
+)
+def read_response_from_s3(
+    bucket_name: str,
+    s3_key: str
+) -> Optional[Dict[str, Any]]:
+    """
+
+    Defensive function to read dictionary data from S3 (NDJSON/JSON format).
     
     Args:
-        secret_name: Name of the secret to retrieve
-        project_id: GCP project ID
+        bucket_name: S3 bucket name
+        s3_key: S3 object key/path
         
     Returns:
-        Secret value as string
+        Dictionary containing parsed JSON data
+        Returns None if read fails
         
     Raises:
-        SecretManagerError: If secret fetch fails
+        ClientError: If S3 operation fails
         
     Example:
-        >>> api_key = get_secret("metal_api_key", "my-project")
+        >>> data = read_response_from_s3("my-bucket", "bronze/2026-04-08/data.json")
+        >>> print(data)
     """
+    _init_aws_clients()
+    
     try:
-        client = secretmanager.SecretManagerServiceClient()
-        secret_path = f"projects/{project_id}/secrets/{secret_name}/versions/latest"
-        response = client.access_secret_version(request={"name": secret_path})
-        secret_value = response.payload.data.decode("UTF-8")
-        logging.info(f"Successfully fetched secret: {secret_name}")
-        return secret_value
+        # 1. Pre-read Validation
+        if not bucket_name or not s3_key:
+            logging.error("Bucket name and S3 key cannot be empty")
+            return None
+        
+        # 2. AWS Client Setup
+        s3_client = boto3.client('s3')
+        
+        logging.info(f"Reading data from s3://{bucket_name}/{s3_key}")
+        
+        # 3. Get Object from S3
+        response = s3_client.get_object(Bucket=bucket_name, Key=s3_key)
+        
+        # 4. Read Body and Parse JSON
+        body = response['Body'].read().decode('utf-8')
+        data = json.loads(body)
+        
+        logging.info("Read successful.")
+        return data
+        
+    except ClientError as e:
+        # Menangkap error spesifik AWS
+        error_code = e.response['Error']['Code']
+        logging.error(f"AWS Error [{error_code}]: {e}")
+        return None
+        
+    except json.JSONDecodeError as e:
+        logging.error(f"Failed to parse JSON from S3: {e}")
+        return None
+        
     except Exception as e:
-        raise SecretManagerError(secret_name, project_id, str(e))
+        # Menangkap error tak terduga
+        logging.error(f"Unexpected error during S3 read: {e}")
+        return None
 
+def upload_parquet_to_s3(data: List[Dict[str, Any]], bucket_name: str, s3_key: str) -> bool:
+    """Upload a Pandas DataFrame to S3 in Parquet format."""
+    _init_aws_clients()
+
+    try:
+        if not data:
+            logging.error("Attempted to upload empty data to S3.")
+            return False
+        
+        df = pd.DataFrame(data)
+        buffer = io.BytesIO()
+        df.to_parquet(buffer, index=False)
+        buffer.seek(0)
+
+        s3_client = boto3.client('s3')
+        s3_client.put_object(
+            Bucket=bucket_name,
+            Key=s3_key,
+            Body=buffer,
+            ContentType='application/octet-stream'
+        )
+        
+        logging.info(f"Parquet upload successful to s3://{bucket_name}/{s3_key}")
+        return True
+    except ClientError as e:
+        error_code = e.response['Error']['Code']
+        logging.error(f"AWS Error [{error_code}]: {e}")
+        return False
 
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=10),
     retry=retry_if_exception_type((httpx.RequestError, httpx.HTTPStatusError)),
 )
-def fetch_metal_prices(api_key: str) -> Optional[Dict[str, Any]]:
-    """Fetch metal prices from metals.dev API.
-    
-    Retrieves current prices for gold, silver, platinum, copper, and nickel.
-    Automatically retries up to 3 times with exponential backoff on network errors.
-    
-    Args:
-        api_key: API key for metals.dev API
-        
-    Returns:
-        Dictionary containing metal prices with keys:
-        - timestamp: ISO format timestamp from API
-        - status: API response status ('success' or 'failed')
-        - metals: Dict with metal prices {metal_name: price}
-        - currency_base: Base currency (usually 'USD')
-        Returns None if all retry attempts fail
-        
-    Raises:
-        httpx.HTTPStatusError: If API returns error status (after retries exhausted)
-        ValueError: If response validation fails
-        
-    Example:
-        >>> prices = fetch_metal_prices("my_api_key")
-        >>> gold_price = prices['metals']['gold']
-    """
-    url = f"{config['api_url']['metal']}?api_key={api_key}&currency=USD&unit=g"
+def fetch_metal_prices(ssm_keyword: str) -> Optional[str]:
+
+    metals_url_key = get_secret_ssm(ssm_keyword)
+    url = metals_url_key["url"]
+    api_key = metals_url_key["api_key"]
+
+    #YYYY-MM-DD HH
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:00:00")
+
     try:
         if not api_key:
             raise ValueError("API key cannot be empty")
             
-        logging.info("Fetching metal prices from API.")
-        response = httpx.get(url, timeout=10)
+        logging.info(f"Fetching metal prices from API.")  # Log tujuannya saja
+        response = httpx.get(
+            url,
+            params={
+                "api_key": api_key,
+                "currency": "USD",
+                "unit": "g"
+            },
+            timeout=10
+        )
         
         # Handle rate limiting with longer backoff
         if response.status_code == 429:
@@ -105,44 +291,8 @@ def fetch_metal_prices(api_key: str) -> Optional[Dict[str, Any]]:
         if data.get("status") != "success":
             raise ValueError(f"API returned non-success status: {data.get('status')}")
         
-        # Check for required fields
-        metals = data.get("metals")
-        if not metals:
-            raise ValueError("Missing 'metals' field in response")
-        
-        # Check if any metals are null
-        for metal_name in ["gold", "silver", "platinum", "copper", "nickel"]:
-            if metals.get(metal_name) is None:
-                logging.warning(f"Metal price for {metal_name} is null")
-        
-        timestamps = data.get("timestamps")
-        if not timestamps or not timestamps.get("metal"):
-            raise ValueError("Missing or invalid timestamp in response")
-            
-        relevant_metals = [
-            "gold",
-            "silver",
-            "platinum",
-            "copper",
-            "nickel",
-        ]
-        filtered_metals = {
-            k: v for k, v in metals.items() if k in relevant_metals
-        }
-        
-        if not filtered_metals:
-            raise ValueError("No relevant metals found in API response")
-
-        processed_data = {
-            "timestamp": timestamps["metal"],
-            "status": data["status"],
-            "metals": filtered_metals,
-            "currency_base": data.get("currency", "USD"),
-        }
-        processed_data_model = ProcessedMetalModel(**processed_data)
         logging.info("Metal prices fetched successfully")
-        return processed_data_model.model_dump()
-        
+
     except httpx.TimeoutException:
         logging.error("Metal API request timed out after 10 seconds")
         return None
@@ -150,43 +300,37 @@ def fetch_metal_prices(api_key: str) -> Optional[Dict[str, Any]]:
         logging.error(f"Error fetching metal prices: {e}")
         return None
 
+    partition_date = datetime.datetime.now().strftime("%Y-%m-%d")
+    s3_key = f"{config['bronze_prefix']}/metal/ingested_at={partition_date}/data.json"
 
+    upload_success = upload_response_to_s3(data, bucket_name, s3_key)
+    if not upload_success:
+        logging.error("Failed to upload metal prices to S3.")
+    else:
+        logging.info("Metal prices uploaded to S3 successfully.")
+        return s3_key
+    
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=10),
     retry=retry_if_exception_type((httpx.RequestError, httpx.HTTPStatusError)),
 )
-def fetch_currency_rate(api_key: str) -> Optional[Dict[str, Any]]:
-    """Fetch currency exchange rates from currencyfreaks API.
-    
-    Retrieves current exchange rates for multiple currencies against base currency.
-    Automatically retries up to 3 times with exponential backoff.
-    
-    Args:
-        api_key: API key for currencyfreaks API
-        
-    Returns:
-        Dictionary with exchange rates containing:
-        - date: Date of exchange rate
-        - base: Base currency code
-        - rates: Dict with currency codes and their rates
-        Returns None if all retry attempts fail
-        
-    Raises:
-        httpx.HTTPStatusError: If API returns error
-        ValueError: If response validation fails
-        
-    Example:
-        >>> rates = fetch_currency_rate("my_api_key")
-        >>> idr_rate = rates['rates']['IDR']
-    """
-    url = f"{config['api_url']['currency']}?apikey={api_key}"
+def fetch_currency_rate(ssm_keyword) -> Optional[str]:
+
+    currency_url_key = get_secret_ssm(ssm_keyword)
+    url = currency_url_key["url"]
+    api_key = currency_url_key["api_key"]
+
     try:
         if not api_key:
             raise ValueError("API key cannot be empty")
             
-        logging.info("Fetching currency rates from API.")
-        response = httpx.get(url, timeout=10)
+        logging.info("Fetching currency rates from API.")  # Log tujuannya saja
+        response = httpx.get(
+            url,
+            params={"apikey": api_key},
+            timeout=10
+        )
         
         # Handle rate limiting
         if response.status_code == 429:
@@ -202,64 +346,33 @@ def fetch_currency_rate(api_key: str) -> Optional[Dict[str, Any]]:
         data = response.json()
         if not data:
             raise ValueError("Empty JSON response from currency API")
-        
-        # Validate required fields
-        rates = data.get("rates")
-        if not rates:
-            raise ValueError("Missing 'rates' field in response")
-        
-        if not isinstance(rates, dict) or len(rates) == 0:
-            raise ValueError("Rates field is empty or invalid")
-        
-        # Check for critical currency (IDR for Indonesia)
-        if rates.get("IDR") is None:
-            logging.warning("IDR rate is missing from response")
-        
-        # Check for null values in rates
-        null_rates = [k for k, v in rates.items() if v is None]
-        if null_rates:
-            logging.warning(f"Null rates found for: {null_rates}")
-            
-        processed_data_model = CurrencyRateModel(**data)
+
         logging.info("Currency rates fetched successfully")
-        return processed_data_model.model_dump()
 
     except httpx.TimeoutException:
-        logging.error("Currency API request timed out after 10 seconds")
+        print("Currency API request timed out after 10 seconds")
         return None
     except (httpx.RequestError, httpx.HTTPStatusError, ValueError) as e:
-        logging.error(f"Error fetching currency rates: {e}")
+        print(f"Error fetching currency rates: {e}")
         return None
-    
+
+    partition_date = datetime.datetime.now().strftime("%Y-%m-%d")
+    s3_key = f"{config['bronze_prefix']}/currency/ingested_at={partition_date}/data.json"
+
+    upload_success = upload_response_to_s3(data, bucket_name, s3_key)
+    if not upload_success:
+        logging.error("Failed to upload currency rates to S3.")
+    else:        
+        logging.info("Currency rates uploaded to S3 successfully.")
+        return s3_key
 
 @retry(
     stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=10),
+    wait=wait_exponential(multiplier=1, min=2, max=6),
     retry=retry_if_exception_type((httpx.RequestError, httpx.HTTPStatusError)),
 )
-def fetch_fred_data(api_key: str) -> Optional[Dict[str, Any]]:
-    """Fetch macroeconomic data from FRED (Federal Reserve Economic Data).
-    
-    Retrieves economic indicators: 10-year treasury yield, trade-weighted dollar index, 
-    and consumer price index. Each series has its own lookback period.
-    
-    Args:
-        api_key: API key for FRED API
-        
-    Returns:
-        Dictionary with series_id keys, each containing:
-        - count: Number of observations
-        - observations: List of data points with date and value
-        Returns None if any series fetch fails
-        
-    Raises:
-        httpx.HTTPStatusError: If API returns error
-        ValueError: If response validation fails
-        
-    Example:
-        >>> fred_data = fetch_fred_data("my_api_key")
-        >>> dgs10 = fred_data['DGS10']['observations'][0]
-    """
+def fetch_fred_data(ssm_keyword: str) -> Optional[str]:
+
     macro_datas: Dict[str, Any] = {}
     series_ids = config["fred_series_ids"]
 
@@ -273,13 +386,26 @@ def fetch_fred_data(api_key: str) -> Optional[Dict[str, Any]]:
             # 7 days lookback for other series
             week_ago = now - datetime.timedelta(days=7)
 
+        fred_url_key = get_secret_ssm(ssm_keyword)
+        url = fred_url_key["url"]
+        api_key = fred_url_key["api_key"]
+
         try:
             if not api_key:
                 raise ValueError("API key cannot be empty")
                 
-            logging.info(f"Fetching FRED data for series ID: {series_id}")
-            url = f"{config['api_url']['fred']}?series_id={series_id}&api_key={api_key}&file_type=json&observation_start={week_ago}&observation_end={now}"
-            response = httpx.get(url, timeout=10)
+            logging.info(f"Fetching FRED data for series: {series_id}")  # Log tujuannya saja
+            response = httpx.get(
+                url,
+                params={
+                    "series_id": series_id,
+                    "api_key": api_key,
+                    "file_type": "json",
+                    "observation_start": str(week_ago),
+                    "observation_end": str(now)
+                },
+                timeout=10
+            )
             
             # Handle rate limiting
             if response.status_code == 429:
@@ -296,158 +422,111 @@ def fetch_fred_data(api_key: str) -> Optional[Dict[str, Any]]:
             
             if not data:
                 raise ValueError(f"Empty JSON response for FRED series {series_id}")
+
+            logging.info(f"FRED data fetched successfully for {series_id}")
             
-            # Validate required fields
-            observations = data.get("observations")
-            if observations is None:
-                raise ValueError(f"Missing 'observations' field for {series_id}")
-            
-            if not isinstance(observations, list):
-                raise ValueError(f"Observations field is not a list for {series_id}")
-            
-            # Check if observations is empty (count < 1)
-            count = data.get("count", 0)
-            if count < 1:
-                raise ValueError(f"No observations available for {series_id} (count={count})")
-            
-            # Warn if observations have null values
-            null_observations = [obs for obs in observations if obs.get("value") is None]
-            if null_observations:
-                logging.warning(f"Found {len(null_observations)} null values in {series_id}")
-                
-            processed_data_model = FredDataModel(**data)
-            data = processed_data_model.model_dump()
             macro_datas[series_id] = data
-            logging.info(f"FRED data fetched for {series_id} ({count} observations)")
-            
+
         except httpx.TimeoutException:
             logging.error(f"FRED API request timed out for {series_id}")
             return None
         except (httpx.RequestError, httpx.HTTPStatusError, ValueError) as e:
             logging.error(f"Error fetching FRED data for {series_id}: {e}")
             return None
+
+    partition_date = datetime.datetime.now().strftime("%Y-%m-%d")
+    s3_key = f"{config['bronze_prefix']}/fred/ingested_at={partition_date}/data.json"
+
+    upload_success = upload_response_to_s3(macro_datas, bucket_name, s3_key)
+    if not upload_success:
+        logging.error("Failed to upload FRED data to S3.")
+    else:
+        logging.info("FRED data uploaded to S3 successfully.")
             
-    return macro_datas
+    return s3_key
 
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=10),
     retry=retry_if_exception_type((httpx.RequestError, httpx.HTTPStatusError)),
 )
-def fetch_news_count(api_key: str, keywords: List[str]) -> Optional[Dict[str, Any]]:
-    """Fetch news article counts from NewsAPI for given keywords.
+def fetch_news(ssm_keyword: str) -> Optional[str]:
+
+    news_raw_response: Dict[str, Any] = {}
+    keywords = config["news_keywords"]
     
-    Counts number of news articles mentioning each keyword for today's date.
-    Automatically retries up to 3 times with exponential backoff.
+    news_config = get_secret_ssm(ssm_keyword)
+    url = news_config["url"]
+    api_key = news_config["api_key"]
     
-    Args:
-        api_key: API key for NewsAPI
-        keywords: List of keywords to search for (e.g., ['gold', 'silver'])
-        
-    Returns:
-        Dictionary with keyword keys and article counts:
-        {
-            "timestamp": "2026-01-30",
-            "gold": 150,
-            "silver": 120,
-            ...
-        }
-        Returns None if any request fails
-        
-    Raises:
-        httpx.HTTPStatusError: If API returns error
-        ValueError: If response validation fails
-        
-    Example:
-        >>> news = fetch_news_count("my_api_key", ["gold", "silver"])
-        >>> gold_count = news['gold']
-    """
-    news_counts: Dict[str, Any] = {"timestamp": datetime.datetime.now().strftime("%Y-%m-%d")}
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:00:00")
     now = datetime.datetime.now().date()
     
-    if not api_key:
-        raise ValueError("API key cannot be empty")
-    if not keywords or not isinstance(keywords, list):
-        raise ValueError("Keywords must be a non-empty list")
+    try:
+        if not api_key:
+            raise ValueError("API key cannot be empty")
+        if not keywords or not isinstance(keywords, list):
+            raise ValueError("Keywords must be a non-empty list")
         
-    for keyword in keywords:
-        if not keyword:
-            logging.warning("Skipping empty keyword")
-            continue
+        for keyword in keywords:
+            if not keyword:
+                logging.warning("Skipping empty keyword")
+                continue
             
-        url = f"{config['api_url']['news_api']}?q={keyword}&from={now}&to={now}&apiKey={api_key}"
-        try:
-            logging.info(f"Fetching news count for keyword: {keyword}")
-            response = httpx.get(url, timeout=10)
-            
-            # Handle rate limiting
-            if response.status_code == 429:
-                logging.warning(f"Rate limited by NewsAPI for '{keyword}' (429)")
-                raise httpx.HTTPStatusError("Rate limited", request=response.request, response=response)
-            
-            response.raise_for_status()
-            
-            # Check for empty response
-            if not response.text:
-                raise ValueError(f"Empty response body for keyword '{keyword}'")
-            
-            data = response.json()
-            if not data:
-                raise ValueError(f"Empty JSON response for keyword '{keyword}'")
-            
-            # Validate required fields
-            status = data.get("status")
-            if status is None:
-                raise ValueError(f"Missing 'status' field for keyword '{keyword}'")
-            
-            if status != "ok":
-                raise ValueError(f"API returned non-ok status '{status}' for keyword '{keyword}'")
-            
-            total_results = data.get("totalResults")
-            if total_results is None:
-                raise ValueError(f"Missing 'totalResults' field for keyword '{keyword}'")
-            
-            if not isinstance(total_results, int) or total_results < 0:
-                raise ValueError(f"Invalid totalResults value {total_results} for keyword '{keyword}'")
-            
-            processed_data_model = NewsCountModel(**{
-                "status": status,
-                "totalResults": total_results,
-            })
-            count = processed_data_model.model_dump()["totalResults"]
-            news_counts[keyword] = count
-            logging.info(f"News count for '{keyword}': {count} articles")
-            
-        except httpx.TimeoutException:
-            logging.error(f"NewsAPI request timed out for keyword '{keyword}'")
-            return None
-        except (httpx.RequestError, httpx.HTTPStatusError, ValueError) as e:
-            logging.error(f"Error fetching news count for '{keyword}': {e}")
-            return None
-            
-    return news_counts
+            try:
+                logging.info(f"Fetching news data for keyword: {keyword}")  # Log tujuannya saja
+                response = httpx.get(
+                    url,
+                    params={
+                        "q": keyword,
+                        "from": str(now - datetime.timedelta(days=1)),
+                        "to": str(now),
+                        "apiKey": api_key
+                    },
+                    timeout=10
+                )
+                
+                # Handle rate limiting with longer backoff
+                if response.status_code == 429:
+                    logging.warning(f"Rate limited by NewsAPI for '{keyword}' (429)")
+                    raise httpx.HTTPStatusError("Rate limited", request=response.request, response=response)
+                
+                response.raise_for_status()
+                
+                # Check for empty response
+                if not response.text:
+                    raise ValueError(f"Empty response body for keyword '{keyword}'")
+                
+                data = response.json()
+                if not data:
+                    raise ValueError(f"Empty JSON response for keyword '{keyword}'")
+                
+                news_raw_response[keyword] = data
+                logging.info(f"News data fetched successfully for keyword '{keyword}'")
+                
+            except httpx.TimeoutException:
+                logging.error(f"NewsAPI request timed out for keyword '{keyword}'")
+                return None
+            except (httpx.RequestError, httpx.HTTPStatusError, ValueError) as e:
+                logging.error(f"Error fetching news data for '{keyword}': {e}")
+                return None
 
+    except ValueError as e:
+        logging.error(f"Configuration error: {e}")
+        return None
+    
+    partition_date = datetime.datetime.now().strftime("%Y-%m-%d")
+    s3_key = f"{config['bronze_prefix']}/news/ingested_at={partition_date}/data.json"
+
+    upload_success = upload_response_to_s3(news_raw_response, bucket_name, s3_key)
+    if not upload_success:
+        logging.error("Failed to upload news data to S3.")
+        return None
+    else:
+        logging.info("News data uploaded to S3 successfully.")
+        return s3_key
 
 def to_ndjson(record: Dict[str, Any]) -> str:
-    """Convert dictionary to NDJSON (newline-delimited JSON) format.
-    
-    Serializes a dictionary to JSON and appends newline.
-    Suitable for BigQuery NEWLINE_DELIMITED_JSON format.
-    
-    Args:
-        record: Dictionary to convert
-        
-    Returns:
-        JSON string with trailing newline
-        
-    Raises:
-        TypeError: If record is not serializable to JSON
-        
-    Example:
-        >>> ndjson = to_ndjson({"name": "gold", "price": 2000})
-        >>> print(ndjson)
-        {"name": "gold", "price": 2000}
-    """
     if not isinstance(record, dict):
         raise TypeError(f"Expected dict, got {type(record).__name__}")
         
@@ -459,24 +538,6 @@ def to_ndjson(record: Dict[str, Any]) -> str:
 
 
 def sanitize_keys(obj: Any) -> Any:
-    """Sanitize dictionary keys for BigQuery compatibility.
-    
-    Recursively processes dictionaries to:
-    - Replace special characters with underscores
-    - Prefix numeric-starting keys with underscore
-    - Handle nested dicts and lists
-    
-    Args:
-        obj: Dictionary, list, or scalar value to sanitize
-        
-    Returns:
-        Sanitized object with valid BigQuery column names
-        
-    Example:
-        >>> data = {"bad key!": 123, "123field": "value"}
-        >>> sanitize_keys(data)
-        {"bad_key_": 123, "_123field": "value"}
-    """
     import re
     
     if isinstance(obj, dict):
@@ -496,73 +557,274 @@ def sanitize_keys(obj: Any) -> Any:
     else:
         return obj
 
+# silver
 
-def fetch_google_trends(keywords: List[str]) -> Optional[List[Dict[str, Any]]]:
-    if not keywords:
-        logging.warning("Keyword list cannot be empty.")
-        return None
-
-    all_trends_data = []
-
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10)
+)
+def transform_metal_prices(metal_s3_key: str) -> Optional[str]:
+    """Transform raw metal prices data from bronze to silver layer.
+    
+    Args:
+        metal_s3_key: S3 path to raw bronze metal prices data
+        
+    Returns:
+        S3 path to processed silver layer data
+        Returns None if transformation fails
+    """
+    logging.info(f"[TRANSFORM] Starting metal prices transformation from: {metal_s3_key}")
+    
     try:
-        # logging.info(
-        #     f"Fetching Google Trends data individually for long-term (5-year) and short-term (7-day) averages."
-        # )
+        # Read bronze layer data
+        logging.debug("Reading raw metal prices from S3")
+        data = read_response_from_s3(bucket_name, metal_s3_key)
+        if not data:
+            logging.error("Failed to read metal prices data from S3")
+            return None
+        
+        # Transform records
+        logging.info("Transforming metal prices records")
+        processed_records = []
+        metal_list = config.get("news_keywords", [])
+        
+        for metal in metal_list:
+            metal_records = {}
+            metal_records["event_timestamp"] = data.get("timestamps", {}).get("metal")
+            metal_records["metal_symbol"] = metal
+            metal_records["price_usd"] = data.get("metals", {}).get(metal)
+            metal_records["currency_base"] = data.get("currency")
+            metal_records["unit"] = data.get("unit")
 
-        pytrends_inst = TrendReq()
-        yesterday_str = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime(
-            "%Y-%m-%d"
-        )
+            try:
+                model_instance = ProcessedMetalModel(**metal_records)
+                processed_records.append(model_instance.model_dump(mode="json"))
+                logging.debug(f"Transformed metal price for: {metal}")
+            except Exception as e:
+                logging.warning(f"[WARN] Skipping metal '{metal}': {e}")
+        
+        logging.info(f"Successfully transformed {len(processed_records)} metal price records")
+        
+        # Upload to silver layer
+        partition_date = datetime.datetime.now().strftime("%Y-%m-%d")
+        s3_key = f"{config['silver_prefix']}/metal/ingested_at={partition_date}/data.parquet"
+        
+        logging.info(f"Uploading transformed data to silver layer: {s3_key}")
+        upload_success = upload_parquet_to_s3(processed_records, bucket_name, s3_key)
+        
+        if not upload_success:
+            logging.error("[ERROR] Failed to upload processed metal prices to S3")
+            return None
+        else:
+            logging.info(f"[SUCCESS] Metal prices transformation complete: {s3_key}")
+            return s3_key
+            
+    except Exception as e:
+        logging.error(f"[ERROR] Unexpected error in metal prices transformation: {e}", exc_info=True)
+        raise
 
+# print(transform_metal_prices("bronze/2026-04-08 10:00:00/metal_prices-2026-04-08 10:00:00.json"))
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10)
+)
+def transform_currency_rates(currency_s3_key: str) -> Optional[str]:
+    """Transform raw currency rates data from bronze to silver layer.
+    
+    Args:
+        currency_s3_key: S3 path to raw bronze currency rates data
+        
+    Returns:
+        S3 path to processed silver layer data
+        Returns None if transformation fails
+    """
+    logging.info(f"[TRANSFORM] Starting currency rates transformation from: {currency_s3_key}")
+    
+    try:
+        # Read bronze layer data
+        logging.debug("Reading raw currency rates from S3")
+        data = read_response_from_s3(bucket_name, currency_s3_key)
+        if not data:
+            logging.error("Failed to read currency rates data from S3")
+            return None
+        
+        # Transform records
+        logging.info("Transforming currency rates records")
+        currency_list = config.get("currency", [])
+        processed_records = []
+        
+        for currency in currency_list:
+            currency_records = {}
+            currency_records["rate_date"] = data.get("date")
+            currency_records["currency_code"] = currency
+            currency_records["exchange_rate"] = float(data.get("rates", {}).get(currency))
+            currency_records["base_currency"] = data.get("base")
+
+            try:
+                model_instance = CurrencyRateModel(**currency_records)
+                processed_records.append(model_instance.model_dump(mode="json"))
+                logging.debug(f"Transformed currency rate for: {currency}")
+            except Exception as e:
+                logging.warning(f"[WARN] Skipping currency '{currency}': {e}")
+
+        logging.info(f"Successfully transformed {len(processed_records)} currency rate records")
+        
+        # Upload to silver layer
+        partition_date = datetime.datetime.now().strftime("%Y-%m-%d")
+        s3_key = f"{config['silver_prefix']}/currency/ingested_at={partition_date}/data.parquet"
+        
+        logging.info(f"Uploading transformed data to silver layer: {s3_key}")
+        upload_success = upload_parquet_to_s3(processed_records, bucket_name, s3_key)
+        
+        if not upload_success:
+            logging.error("[ERROR] Failed to upload processed currency rates to S3")
+            return None
+        else:
+            logging.info(f"[SUCCESS] Currency rates transformation complete: {s3_key}")
+            return s3_key
+            
+    except Exception as e:
+        logging.error(f"[ERROR] Unexpected error in currency rates transformation: {e}", exc_info=True)
+        raise
+
+# print(transform_currency_rates("bronze/2026-04-08 10:00:00/currency_rates-2026-04-08 10:00:00.json"))
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10)
+)
+def transform_fred_data(fred_s3_key: str) -> Optional[str]:
+    """Transform raw FRED data from bronze to silver layer.
+    
+    Args:
+        fred_s3_key: S3 path to raw bronze FRED macro data
+        
+    Returns:
+        S3 path to processed silver layer data
+        Returns None if transformation fails
+    """
+    logging.info(f"[TRANSFORM] Starting FRED data transformation from: {fred_s3_key}")
+    
+    try:
+        # Read bronze layer data
+        logging.debug("Reading raw FRED data from S3")
+        data = read_response_from_s3(bucket_name, fred_s3_key)
+        if not data:
+            logging.error("Failed to read FRED data from S3")
+            return None
+        
+        # Transform records
+        logging.info("Transforming FRED macro data records")
+        series_ids = config.get("fred_series_ids", [])
+        processed_records = []
+        
+        for series_id in series_ids:
+            units = data.get(series_id, {}).get("units")
+            observations = data.get(series_id, {}).get("observations", [])
+            logging.debug(f"Processing FRED series '{series_id}' with {len(observations)} observations")
+
+            for obs in observations:
+                fred_records = {}
+                fred_records["series_id"] = series_id
+                fred_records["observation_date"] = obs.get("date")
+                fred_records["observation_values"] = obs.get("value")
+                fred_records["units"] = units
+
+                try:
+                    model_instance = FredDataModel(**fred_records)
+                    processed_records.append(model_instance.model_dump(mode="json"))
+                except Exception as e:
+                    logging.warning(f"[WARN] Skipping observation for series '{series_id}': {e}")
+
+        logging.info(f"Successfully transformed {len(processed_records)} FRED data records")
+        
+        # Upload to silver layer
+        partition_date = datetime.datetime.now().strftime("%Y-%m-%d")
+        s3_key = f"{config['silver_prefix']}/fred/ingested_at={partition_date}/data.parquet"
+        
+        logging.info(f"Uploading transformed data to silver layer: {s3_key}")
+        upload_success = upload_parquet_to_s3(processed_records, bucket_name, s3_key)
+        
+        if not upload_success:
+            logging.error("[ERROR] Failed to upload processed FRED data to S3")
+            return None
+        else:
+            logging.info(f"[SUCCESS] FRED data transformation complete: {s3_key}")
+            return s3_key
+            
+    except Exception as e:
+        logging.error(f"[ERROR] Unexpected error in FRED data transformation: {e}", exc_info=True)
+        raise
+
+# print(transform_fred_data("bronze/2026-04-08 10:00:00/fred_data-2026-04-08 10:00:00.json"))
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10)
+)
+def transform_news(news_s3_key: str) -> Optional[str]:
+    """Transform raw news data from bronze to silver layer.
+    
+    Args:
+        news_s3_key: S3 path to raw bronze news data
+        
+    Returns:
+        S3 path to processed silver layer data
+        Returns None if transformation fails
+    """
+    logging.info(f"[TRANSFORM] Starting news data transformation from: {news_s3_key}")
+    
+    try:
+        # Read bronze layer data
+        logging.debug("Reading raw news data from S3")
+        data = read_response_from_s3(bucket_name, news_s3_key)
+        if not data:
+            logging.error("Failed to read news data from S3")
+            return None
+        
+        # Transform records
+        logging.info("Transforming news records")
+        keywords = config.get("news_keywords", [])
+        processed_records = []
+        
         for keyword in keywords:
-            # TIME_RANGE_5Y = "today 5-y"
-            # pytrends_inst.build_payload([keyword], timeframe=TIME_RANGE_5Y)
-            # trends_data_5y = pytrends_inst.interest_over_time()
+            news_data = data.get(keyword, {})
+            total_mentions = news_data.get("totalResults", 0)
+            status = news_data.get("status", "unknown")
+            
+            logging.debug(f"Processing keyword '{keyword}': {total_mentions} mentions")
 
-            TIME_RANGE_7D = "now 7-d"
-            pytrends_inst.build_payload([keyword], timeframe=TIME_RANGE_7D)
-            trends_data_7d = pytrends_inst.interest_over_time()
-
-            # avg_5y = None
-            # if not trends_data_5y.empty and keyword in trends_data_5y.columns:
-            #     if "isPartial" in trends_data_5y.columns:
-            #         trends_data_5y = trends_data_5y.drop(columns=["isPartial"])
-            #     avg_5y = float(trends_data_5y[keyword].mean(numeric_only=True))
-            #     logging.info(f"5Y Avg score for '{keyword}': {avg_5y:.2f}")
-            # else:
-            #     logging.warning(f"No 5Y data found for keyword: '{keyword}'.")
-
-            avg_7d = None
-            if not trends_data_7d.empty and keyword in trends_data_7d.columns:
-                if "isPartial" in trends_data_7d.columns:
-                    trends_data_7d = trends_data_7d.drop(columns=["isPartial"])
-                avg_7d = float(trends_data_7d[keyword].mean(numeric_only=True))
-                logging.info(f"7D Avg score for '{keyword}': {avg_7d:.2f}")
-            else:
-                logging.warning(f"No 7D data found for keyword: '{keyword}'.")
-
-            data_point = {
-                "date": yesterday_str,
-                "indicator_name": keyword,
-                # "indicator_value_5y_avg": avg_5y,
-                "indicator_value_7d_avg": avg_7d,
+            news_records = {
+                "news_timestamp": datetime.datetime.now(),
+                "keywords": keyword,
+                "total_mentions": total_mentions,
+                "status": status
             }
 
-            all_trends_data.append(data_point)
+            try:
+                model_instance = NewsCountModel(**news_records)
+                processed_records.append(model_instance.model_dump(mode="json"))
+            except Exception as e:
+                logging.warning(f"[WARN] Skipping keyword '{keyword}': {e}")
 
-            sleep_time = random.randint(8, 15)
-            logging.info(f"Pausing for {sleep_time} seconds...")
-            time.sleep(sleep_time)
-
-        if all_trends_data:
-            logging.info(
-                f"Successfully aggregated {len(all_trends_data)} trends scores."
-            )
-            return json.dumps(all_trends_data)
-        else:
-            logging.warning("No Google Trends data found for any of the keywords.")
+        logging.info(f"Successfully transformed {len(processed_records)} news records")
+        
+        # Upload to silver layer
+        partition_date = datetime.datetime.now().strftime("%Y-%m-%d")
+        s3_key = f"{config['silver_prefix']}/news/ingested_at={partition_date}/data.parquet"
+        
+        logging.info(f"Uploading transformed data to silver layer: {s3_key}")
+        upload_success = upload_parquet_to_s3(processed_records, bucket_name, s3_key)
+        
+        if not upload_success:
+            logging.error("[ERROR] Failed to upload processed news data to S3")
             return None
-
+        else:
+            logging.info(f"[SUCCESS] News data transformation complete: {s3_key}")
+            return s3_key
+            
     except Exception as e:
-        logging.error(f"Error fetching Google Trends data: {e}")
-        return None
+        logging.error(f"[ERROR] Unexpected error in news data transformation: {e}", exc_info=True)
+        raise
+# print(transform_news("bronze/2026-04-08 11:00:00/news_data-2026-04-08 11:00:00.json"))

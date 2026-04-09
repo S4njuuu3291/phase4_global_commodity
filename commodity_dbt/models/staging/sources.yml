@@ -1,0 +1,11 @@
+version: 2
+
+sources:
+  - name: athena_silver
+    database: awsdatacatalog
+    schema: ds_commodity_staged
+    tables:
+      - name: metal_prices
+      - name: currency_rates
+      - name: fred_data
+      - name: news_data

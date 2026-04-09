@@ -1,13 +1,15 @@
-ARG AIRFLOW_IMAGE_NAME=apache/airflow:3.1.3
-FROM ${AIRFLOW_IMAGE_NAME}
+FROM apache/airflow:2.10.2-python3.12
 
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+USER airflow
+# Copy requirements jika ada
 COPY requirements.txt .
-RUN pip install --no-cache-dir --user -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
-RUN pip install poetry
-
-COPY . /opt/airflow/
-
-WORKDIR /opt/airflow/
-
-RUN poetry install --no-root
+# Install dbt-athena-community untuk transformasi data
+RUN pip install --no-cache-dir dbt-athena-community
