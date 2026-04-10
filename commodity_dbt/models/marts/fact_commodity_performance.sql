@@ -7,10 +7,26 @@
 with metal as (
     select * from {{ ref('stg_metal_prices') }}
 ),
-currency as (
-    select * from {{ ref('stg_currency_rates') }}
+
+-- Ambil semua data IDR historis
+currency_daily as (
+    select 
+        rate_date,
+        exchange_rate
+    from {{ ref('stg_currency_rates') }}
     where currency_code = 'IDR'
 ),
+
+-- Ambil HANYA 1 rate IDR paling terbaru sebagai cadangan (Fallback)
+currency_latest as (
+    select 
+        exchange_rate as latest_rate
+    from {{ ref('stg_currency_rates') }}
+    where currency_code = 'IDR'
+    order by rate_date desc, event_timestamp desc
+    limit 1
+),
+
 news as (
     select 
         CAST(SUBSTRING(CAST(event_timestamp AS VARCHAR), 1, 10) AS DATE) as news_date,
@@ -19,7 +35,7 @@ news as (
     from {{ ref('stg_news_data') }}
     group by 1, 2
 ),
--- Ambil data FRED terbaru untuk setiap indikator
+
 fred_latest as (
     select 
         series_id,
@@ -27,7 +43,7 @@ fred_latest as (
         row_number() over (partition by series_id order by observation_date desc) as rn
     from {{ ref('stg_fred_data') }}
 ),
--- PIVOT: Ubah baris jadi kolom agar tetap 1 baris per commodity
+
 fred_pivoted as (
     select
         max(case when series_id = 'DGS10' then observation_values end) as yield_10y,
@@ -40,16 +56,17 @@ fred_pivoted as (
 select
     m.commodity_code,
     m.price_usd as price_usd_per_gr,
-    c.exchange_rate as usd_to_idr,
-    (m.price_usd * c.exchange_rate) as price_idr_per_gr,
+    -- PAKE COALESCE: Coba join tanggal dulu, kalau NULL ambil rate paling terbaru
+    coalesce(c.exchange_rate, cl.latest_rate) as usd_to_idr,
+    (m.price_usd * coalesce(c.exchange_rate, cl.latest_rate)) as price_idr_per_gr,
     coalesce(n.daily_mentions, 0) as news_hype_count,
-    -- Data Ekonomi Lengkap (Pivoted)
     f.yield_10y,
     f.usd_index,
     f.cpi_index,
     m.trade_date
 from metal m
-left join currency c on m.trade_date = c.rate_date
+left join currency_daily c on m.trade_date = c.rate_date
 left join news n on m.trade_date = n.news_date and m.commodity_code = n.topics
--- CROSS JOIN karena fred_pivoted cuma berisi tepat 1 baris sakti
+-- CROSS JOIN cl dan f karena keduanya cuma berisi 1 baris sakti untuk seluruh tabel
+cross join currency_latest cl
 cross join fred_pivoted f
