@@ -35,7 +35,7 @@ default_args = {
     dag_id='commodity_pipeline',
     default_args=default_args,
     start_date=datetime(2026, 4, 8),
-    schedule='@daily',
+    schedule='0 16 * * *', # Berjalan setiap hari jam 23:00 WIB (16:00 UTC)
     catchup=False,
     tags=['commodity', 'duckdb']
 )
