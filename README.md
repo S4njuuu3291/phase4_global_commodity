@@ -2,9 +2,9 @@
 
 ![Global Commodity Data Pipeline Hero](assets/images/hero.png)
 
-![Python](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white) ![Airflow](https://img.shields.io/badge/airflow-2.10.2-017CEE?logo=apacheairflow&logoColor=white) ![dbt](https://img.shields.io/badge/dbt-athena--community-FF694B?logo=dbt&logoColor=white) ![AWS](https://img.shields.io/badge/aws-s3|athena|ssm-FF9900?logo=amazonaws&logoColor=white)
+![Python](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white) ![Airflow](https://img.shields.io/badge/airflow-2.10.2-017CEE?logo=apacheairflow&logoColor=white) ![dbt](https://img.shields.io/badge/dbt-athena--community-FF694B?logo=dbt&logoColor=white) ![AWS](https://img.shields.io/badge/aws-s3|athena|ssm-FF9900?logo=amazonaws&logoColor=white) ![Superset](https://img.shields.io/badge/superset-4.0.0-20A0C0?logo=apache)
 
-End-to-end data pipeline for commodity intelligence. Ingests metals prices, FX rates, macro indicators, and news; transforms with dbt; serves analytics via Athena.
+End-to-end data pipeline for commodity intelligence. Ingests metals prices, FX rates, macro indicators, and news; transforms with dbt; serves analytics via Athena and **visualized with Apache Superset**.
 
 ### What It Does
 
@@ -13,12 +13,13 @@ End-to-end data pipeline for commodity intelligence. Ingests metals prices, FX r
 - Stores Bronze (raw) → Silver (parquet) on S3
 - Models with dbt (staging + marts)
 - Exposes via Athena external tables
+- **Visualizes** via interactive Apache Superset dashboard
 
 ## Architecture
 
 ![Architecture](assets/images/architecture.png)
 
-### Pipeline in Action
+### Pipeline & Dashboard Screenshots and Overview
 
 <details>
 <summary><strong>📊 Airflow Orchestration</strong></summary>
@@ -28,14 +29,48 @@ End-to-end data pipeline for commodity intelligence. Ingests metals prices, FX r
 ![Airflow dbt Run](assets/images/airflow-log-success-dbt-run.png)
 </details>
 
+<br>
+
 <details>
 <summary><strong>🔄 dbt Transformation</strong></summary>
 
 ![dbt Lineage](assets/images/dbt-lineage.png)
 ![Fact Table Sample](assets/images/fact-table-sample.png)
 </details>
+<br>
+<details>
+<summary><strong>🗂️ Superset Dashboard Export</strong></summary>
+
+
+A portable export of the dashboard is available at:
+[`dashboards/dashboard_export_20260516T050021.zip`](dashboards/dashboard_export_20260516T050021.zip)
+
+To import into another Superset instance:
+1. Go to **Dashboards → Import Dashboard**
+2. Upload the `.zip` file
+3. Map the database connection to your Athena instance
+
+![Global Commodity Dashboard](assets/images/global-commodity-dashboard.jpg)
+The pipeline feeds into **Apache Superset** for interactive dashboards:
+
+| Chart | Description |
+|-------|-------------|
+| **Harga Logam Harian** | Line chart of metal prices (USD/gr) over time, grouped by commodity code |
+| **Harga vs USD Index** | Dual-axis chart comparing commodity price with DXY dollar strength index |
+| **Harga vs Yield 10Y** | Dual-axis chart comparing commodity price with US 10-year treasury yield |
+| **Harga vs CPI** | Dual-axis chart comparing commodity price with consumer price index |
+| **Harga vs News Hype** | Correlation between news mention volume and commodity price movements |
+| **IDR Rate to USD** | Big number with trendline showing the latest USD/IDR exchange rate |
+
+> **Access:** `http://localhost:8088` — Username: `admin`, Password: `admin`
+</details>
 
 ## Tech & Stack
+
+| Layer | Tools |
+|-------|-------|
+| **Orchestration** | Apache Airflow 2.10.2 |
+| **Compute** | Python 3.12, dbt-athena-community |
 
 | Layer | Tools |
 |-------|-------|
